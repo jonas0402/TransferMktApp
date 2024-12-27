@@ -46,7 +46,7 @@ def log_execution_time(func):
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
-        logging.warning(f"Function '{func.__name__}' took {end_time - start_time:.2f} seconds")
+        logging.info(f"Function '{func.__name__}' took {end_time - start_time:.2f} seconds")
         return result
     return wrapper
 
@@ -59,7 +59,7 @@ def get_competition_name(competition_name):
     try:
         response = requests.get(url, params=params)
         competition_id = response.json()['results'][0]['id']
-        logging.warning(f"Fetched competition ID: {competition_id} for competition name: {competition_name}")
+        logging.info(f"Fetched competition ID: {competition_id} for competition name: {competition_name}")
         return competition_id
     except Exception as e:
         logging.error(f"Error fetching competition name: {e}")
@@ -74,7 +74,7 @@ def get_club_ids(competition_id):
         response = requests.get(f"{base_url}{endpoint}")
         data_dict["data"] = response.json()
         club_ids.extend([club['id'] for club in response.json()['clubs']])
-        logging.warning(f"Fetched {len(club_ids)} club IDs for competition ID: {competition_id}")
+        logging.info(f"Fetched {len(club_ids)} club IDs for competition ID: {competition_id}")
         return data_dict
     except Exception as e:
         logging.error(f"Error fetching club IDs: {e}")
@@ -94,7 +94,7 @@ def get_club_players(club_ids):
             }
             data_dict["data"].append(club_player_data)
             player_ids.extend([player['id'] for player in response.json()['players']])
-            logging.warning(f"Fetched players for club ID: {id}")
+            logging.info(f"Fetched players for club ID: {id}")
         except Exception as e:
             logging.error(f"Error fetching players for club ID {id}: {e}")
     return data_dict
@@ -111,7 +111,7 @@ def get_player_data(endpoint, player_ids):
                 "players": response.json()
             }
             data_dict["data"].append(players_data)
-            logging.warning(f"Fetched data for player ID: {id}")
+            logging.info(f"Fetched data for player ID: {id}")
         except Exception as e:
             logging.error(f"Error fetching player data for ID {id}: {e}")
     return data_dict
@@ -189,7 +189,7 @@ def upload_to_s3(data, file_name, folder_name):
     date_file = str(datetime.now().date())
     s3_key = f"{folder_name}/{file_name}_{date_file}.json"
     s3_client.put_object(Body=json.dumps(data), Bucket=s3_bucket_name, Key=s3_key)
-    logging.warning(f"Uploaded file to S3: {s3_key}")
+    logging.info(f"Uploaded file to S3: {s3_key}")
 
 @log_execution_time
 def delete_all_except_last_n(bucket_name, files_to_keep, folder_name):
@@ -200,7 +200,7 @@ def delete_all_except_last_n(bucket_name, files_to_keep, folder_name):
         files_to_delete = sorted_objects[files_to_keep:]
         for obj in files_to_delete:
             s3_client.delete_object(Bucket=bucket_name, Key=obj['Key'])
-            logging.warning(f"Deleted file: {obj['Key']}")
+            logging.info(f"Deleted file: {obj['Key']}")
     except Exception as e:
         logging.error(f"Error deleting files in folder {folder_name}: {e}")
 
@@ -247,7 +247,7 @@ def main():
 
 
     end_time = time.time()
-    logging.warning(f"Total script execution time: {end_time - start_time:.2f} seconds")
+    logging.info(f"Total script execution time: {end_time - start_time:.2f} seconds")
 
 if __name__ == "__main__":
     main()
