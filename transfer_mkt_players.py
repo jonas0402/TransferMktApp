@@ -38,7 +38,7 @@ league_table_data = 'raw_data/league_data'
 # Placeholder for player IDs
 player_ids = []
 club_ids = []
-competition_id = 'MLS1'
+competition_code = 'MLS1'
     
 def log_execution_time(func):
     """Decorator to log the execution time of a function."""
@@ -208,7 +208,6 @@ def delete_all_except_last_n(bucket_name, files_to_keep, folder_name):
 def main():
     """Main function to orchestrate data fetching and processing."""
     start_time = time.time()
-    competition_code = get_competition_name('Major League Soccer')
     clup_profile_data = get_club_ids(competition_code)
     club_players_data = get_club_players(club_ids)
     leagues_table_data = get_table_league('major league soccer')
