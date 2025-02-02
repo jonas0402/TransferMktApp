@@ -38,6 +38,7 @@ league_table_data = 'raw_data/league_data'
 # Placeholder for player IDs
 player_ids = []
 club_ids = []
+competition_id = 'MLS1'
     
 def log_execution_time(func):
     """Decorator to log the execution time of a function."""
@@ -48,24 +49,6 @@ def log_execution_time(func):
         logging.info(f"Function '{func.__name__}' took {end_time - start_time:.2f} seconds")
         return result
     return wrapper
-
-@log_execution_time
-def get_competition_name(competition_name):
-    """Fetch competition ID based on its name."""
-    endpoint = "competitions/search/"
-    params = {"page_number": 1}
-    url = f"{base_url}{endpoint}{competition_name}"
-    try:
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            logging.error(f"API call failed with status code {response.status_code}: {response.text}")
-            raise Exception("API call failed")
-        competition_id = response.json()['results'][0]['id']
-        logging.info(f"Fetched competition ID: {competition_id} for competition name: {competition_name}")
-        return competition_id
-    except Exception as e:
-        logging.error(f"Error fetching competition name: {e}")
-        return None
 
 @log_execution_time
 def get_club_ids(competition_id):
