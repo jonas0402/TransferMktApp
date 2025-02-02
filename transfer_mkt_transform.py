@@ -147,7 +147,7 @@ def main():
 
     
     ######              Club Profile Clean Up               #####
-    club_profiles_df = pd.json_normalize(club_profiles_data['data'], 'clubs', ['seasonID','updatedAt'], meta_prefix='club_', record_prefix='club_')
+    club_profiles_df = pd.json_normalize(club_profiles_data['data'], 'clubs', ['seasonId','updatedAt'], meta_prefix='club_', record_prefix='club_')
     club_profiles_df['club_updatedAt'] = pd.to_datetime(club_profiles_df['club_updatedAt'], errors='coerce')
 
     #####               Player Profile Clean Up                #####
