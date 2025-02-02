@@ -38,8 +38,7 @@ league_table_data = 'raw_data/league_data'
 # Placeholder for player IDs
 player_ids = []
 club_ids = []
-
-
+    
 def log_execution_time(func):
     """Decorator to log the execution time of a function."""
     def wrapper(*args, **kwargs):
@@ -58,6 +57,9 @@ def get_competition_name(competition_name):
     url = f"{base_url}{endpoint}{competition_name}"
     try:
         response = requests.get(url, params=params)
+        if response.status_code != 200:
+            logging.error(f"API call failed with status code {response.status_code}: {response.text}")
+            raise Exception("API call failed")
         competition_id = response.json()['results'][0]['id']
         logging.info(f"Fetched competition ID: {competition_id} for competition name: {competition_name}")
         return competition_id
@@ -72,6 +74,9 @@ def get_club_ids(competition_id):
     data_dict = {}
     try:
         response = requests.get(f"{base_url}{endpoint}")
+        if response.status_code != 200:
+            logging.error(f"API call failed with status code {response.status_code}: {response.text}")
+            raise Exception("API call failed")
         data_dict["data"] = response.json()
         club_ids.extend([club['id'] for club in response.json()['clubs']])
         logging.info(f"Fetched {len(club_ids)} club IDs for competition ID: {competition_id}")
@@ -88,6 +93,9 @@ def get_club_players(club_ids):
         endpoint = f"clubs/{id}/players"
         try:
             response = requests.get(f"{base_url}{endpoint}")
+            if response.status_code != 200:
+                logging.error(f"API call failed with status code {response.status_code}: {response.text}")
+                raise Exception("API call failed")
             club_player_data ={
                 "club_id":id,
                 "players": response.json()
@@ -106,6 +114,9 @@ def get_player_data(endpoint, player_ids):
     for id in player_ids:
         try:
             response = requests.get(f"{base_url}{endpoint.format(id)}")
+            if response.status_code != 200:
+                logging.error(f"API call failed with status code {response.status_code}: {response.text}")
+                raise Exception("API call failed")
             players_data ={
                 "player_id":id,
                 "players": response.json()
@@ -131,6 +142,9 @@ def get_table_league(comp_name):
     url = f'https://www.transfermarkt.us/{comp_name}/tabelle/wettbewerb/MLS1/saison_id/{current_year}'
     logging.info(f"Fetching data from initial URL: {url}")
     response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+                logging.error(f"API call failed with status code {response.status_code}: {response.text}")
+                raise Exception("API call failed")
     
     html_content = StringIO(response.text)
     tables = pd.read_html(html_content)
@@ -143,6 +157,9 @@ def get_table_league(comp_name):
         logging.info(f"Fetching season data for year {year} from URL: {url}")
 
         response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+                logging.error(f"API call failed with status code {response.status_code}: {response.text}")
+                raise Exception("API call failed")
         tables = pd.read_html(StringIO(response.text))
 
         logging.info(f"Assigning conference and year to tables for year {year}")
@@ -232,8 +249,6 @@ def main():
     upload_to_s3(club_players_data,'club_players_data',players_data)
     upload_to_s3(leagues_table_data,'league_table_data',league_table_data)
 
-    
-
     # Example of deleting old files
     delete_all_except_last_n(s3_bucket_name, 1, club_profiles_data)
     delete_all_except_last_n(s3_bucket_name, 1, players_data)
@@ -244,7 +259,6 @@ def main():
     delete_all_except_last_n(s3_bucket_name, 1, player_achievements_data)
     delete_all_except_last_n(s3_bucket_name, 1, player_transfers_data)
     delete_all_except_last_n(s3_bucket_name, 1, league_table_data)
-
 
     end_time = time.time()
     logging.info(f"Total script execution time: {end_time - start_time:.2f} seconds")
