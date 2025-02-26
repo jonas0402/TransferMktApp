@@ -347,6 +347,9 @@ def process_players_market_value(data: Dict[str, Any], output_prefix: str, curre
             if isinstance(history, list):
                 normalized = pd.json_normalize(history, errors='raise')
                 normalized['id'] = player_id
+                # Rename historical market value column to avoid collision
+                if 'marketValue' in normalized.columns:
+                    normalized.rename(columns={'marketValue': 'historical_marketValue'}, inplace=True)
                 normalized.columns = [f'player_{col}' for col in normalized.columns]
                 market_value_history.append(normalized)
         if market_value_history:
