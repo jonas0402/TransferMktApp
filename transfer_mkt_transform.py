@@ -1,69 +1,82 @@
 import pandas as pd
-import numpy as np
 import boto3
 import json
 from io import BytesIO
+from typing import Optional, Any, Dict
 import logging
 from datetime import datetime
 import time
 import os
 
-# Access the credentials
-access_key = os.getenv("AWS_ACCESS_KEY_ID")
-secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# AWS S3 Configuration
-aws_access_key_id = access_key
-aws_secret_access_key = secret_key
-s3_bucket_name = "transfermkt-data"
-
-# Initialize S3 client with credentials
-s3_client = boto3.client('s3',
-    aws_access_key_id=aws_access_key_id,
-    aws_secret_access_key=aws_secret_access_key,
-    region_name='us-east-1'  # Specify the appropriate region
-)
-glue_client = boto3.client('glue',
-    aws_access_key_id=aws_access_key_id,
-    aws_secret_access_key=aws_secret_access_key,
-    region_name='us-east-1'  # Specify the appropriate region
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-def get_latest_file_from_s3(bucket_name, folder_key):
-    """ Retrieve the most recent file from an S3 bucket folder. """
-    # List all files in the specified folder
-    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_key)
-    
-    if 'Contents' not in response:
-        logging.error(f"No files found in {bucket_name}/{folder_key}")
+# Access AWS credentials from environment variables
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+S3_BUCKET_NAME = "transfermkt-data"
+
+# Initialize boto3 clients
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name='us-east-1'
+)
+glue_client = boto3.client(
+    'glue',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name='us-east-1'
+)
+
+
+def parse_market_value(value: str) -> float:
+    """Parse a market value string with units (k/m) into a float."""
+    if not value:
+        return float('nan')
+    value = value.replace('€', '').strip().lower()
+    try:
+        if 'k' in value:
+            return float(value.replace('k', '')) * 1000
+        elif 'm' in value:
+            return float(value.replace('m', '')) * 1000000
+        else:
+            return float(value)
+    except Exception as e:
+        logging.warning(f"Failed to parse market value '{value}': {e}")
+        return float('nan')
+
+
+def get_latest_file_from_s3(bucket_name: str, folder_key: str) -> Optional[str]:
+    """Retrieve the most recent file from an S3 bucket folder."""
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_key)
+        if 'Contents' not in response:
+            logging.error(f"No files found in {bucket_name}/{folder_key}")
+            return None
+        files = sorted(response['Contents'], key=lambda x: x['LastModified'], reverse=True)
+        return files[0]['Key']
+    except Exception as e:
+        logging.error(f"Error listing objects in {folder_key}: {e}", exc_info=True)
         return None
-    
-    # Sort the files by the last modified date in descending order
-    files = sorted(response['Contents'], key=lambda x: x['LastModified'], reverse=True)
-    
-    # Return the key of the most recently modified file
-    return files[0]['Key']
 
-    
-def read_json_from_s3(folder_key, bucket_name):
-    """ Read the latest JSON file from a folder in an S3 bucket and return as a normalized dataframe. """    
-    
-    # Get the key of the latest file
+
+def read_json_from_s3(folder_key: str, bucket_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Read the latest JSON file from a folder in an S3 bucket and return it as a Python dictionary.
+    """
     last_file_key = get_latest_file_from_s3(bucket_name, folder_key)
-    
     if last_file_key:
-        # Get the object using the key of the last file
         response = s3_client.get_object(Bucket=bucket_name, Key=last_file_key)
         status = response.get('ResponseMetadata', {}).get('HTTPStatusCode')
-        
         if status == 200:
-            logging.info(f"Successful S3 get_object response. Status - {status}")
+            logging.info(f"Successful S3 get_object response for key: {last_file_key}")
             json_content = response['Body'].read().decode('utf-8')
-            data = json.loads(json_content)  # Load JSON data into a Python dictionary
-            return data
+            return json.loads(json_content)
         else:
             logging.error(f"Unsuccessful S3 get_object response. Status - {status}")
             return None
@@ -71,390 +84,447 @@ def read_json_from_s3(folder_key, bucket_name):
         logging.error("No files found in the specified folder.")
         return None
 
-def write_dataframe_to_s3(df, key, bucket_name):
-    """ Write a dataframe to S3 bucket in CSV format. """
-    # Create a buffer
+
+def write_dataframe_to_s3(df: pd.DataFrame, key: str, bucket_name: str) -> None:
+    """Write a DataFrame to an S3 bucket in CSV format.
+    
+    This function creates a copy of the DataFrame for output, converts the column names to lowercase,
+    and then writes the CSV to S3 without affecting the original DataFrame.
+    """
+    df_for_output = df.copy()
+    df_for_output.columns = df_for_output.columns.str.lower()
     buffer = BytesIO()
-    # Write the dataframe to buffer in CSV format
-    df.to_csv(buffer, index=False, sep='|')
-    # Important: move the buffer's cursor to the start of the stream
+    df_for_output.to_csv(buffer, index=False, sep='|')
     buffer.seek(0)
-    # Put the CSV data from the buffer to the S3 bucket
     s3_client.put_object(Bucket=bucket_name, Key=key, Body=buffer.getvalue())
-    # Log the action
-    logging.info(f"Dataframe written to S3 under key: {key} in CSV format")
+    logging.info(f"DataFrame written to S3 under key: {key}")
 
-def delete_all_except_last_n(bucket_name, files_to_keep, folder_name):
+
+def delete_all_except_last_n(bucket_name: str, files_to_keep: int, folder_name: str) -> None:
+    """
+    Delete all files in the specified folder of the S3 bucket except for the most recent 'files_to_keep' files.
+    """
     try:
-        # List objects in the specified folder of the S3 bucket
-        objects = s3_client.list_objects(Bucket=bucket_name, Prefix=folder_name)['Contents']
-
-        # Sort objects by last modified date in descending order
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_name)
+        if 'Contents' not in response:
+            logging.info(f"No objects found in {folder_name}.")
+            return
+        objects = response['Contents']
         sorted_objects = sorted(objects, key=lambda x: x['LastModified'], reverse=True)
-
-        # Keep the last n objects (files) and delete the rest
         files_to_delete = sorted_objects[files_to_keep:]
-
-        # Iterate through objects to be deleted
         for obj in files_to_delete:
-            # Delete the object
             s3_client.delete_object(Bucket=bucket_name, Key=obj['Key'])
-            print(f"Deleted file: {obj['Key']}")
-
+            logging.info(f"Deleted file: {obj['Key']}")
     except Exception as e:
-        print(f"Error: {e}")
+        logging.error(f"Error deleting files in {folder_name}: {e}", exc_info=True)
 
-def delete_all_except_last_n(bucket_name, files_to_keep, folder_name):
-    try:
-        # List objects in the specified folder of the S3 bucket
-        objects = s3_client.list_objects(Bucket=bucket_name, Prefix=folder_name)['Contents']
 
-        # Sort objects by last modified date in descending order
-        sorted_objects = sorted(objects, key=lambda x: x['LastModified'], reverse=True)
-
-        # Keep the last n objects (files) and delete the rest
-        files_to_delete = sorted_objects[files_to_keep:]
-
-        # Iterate through objects to be deleted
-        for obj in files_to_delete:
-            # Delete the object
-            s3_client.delete_object(Bucket=bucket_name, Key=obj['Key'])
-            print(f"Deleted file: {obj['Key']}")
-
-    except Exception as e:
-        print(f"Error: {e}")
-        
-def start_crawler(crawler_name):
+def start_crawler(crawler_name: str) -> Dict[str, Any]:
+    """Start an AWS Glue crawler."""
     logging.info(f"Starting crawler: {crawler_name}")
     response = glue_client.start_crawler(Name=crawler_name)
-    
     return response
 
 
+# --- Data Processing Functions ---
 
-def main():
-    
-    # Read data from S3
-    club_profiles_data = read_json_from_s3('raw_data/club_profiles_data/', s3_bucket_name)  # Folder key only
-    players_profile_data = read_json_from_s3('raw_data/players_profile_data/', s3_bucket_name)  # Folder key only
-    player_stats_data = read_json_from_s3('raw_data/player_stats_data/', s3_bucket_name)  # Folder key only
-    players_achievements_data = read_json_from_s3('raw_data/players_achievements_data/', s3_bucket_name)  # Folder key only
-    players_data = read_json_from_s3('raw_data/players_data/', s3_bucket_name)  # Folder key only
-    players_injuries_data = read_json_from_s3('raw_data/players_injuries_data/', s3_bucket_name)  # Folder key only
-    players_market_value_data = read_json_from_s3('raw_data/players_market_value_data/', s3_bucket_name)  # Folder key only
-    players_transfers_data = read_json_from_s3('raw_data/players_transfers_data/', s3_bucket_name)  # Folder key only
-    leagues_table_data = read_json_from_s3('raw_data/league_data/', s3_bucket_name)  # Folder key only
-
-    
-    ######              Club Profile Clean Up               #####
-    club_profiles_df = pd.json_normalize(club_profiles_data['data'], 'clubs', ['seasonId','updatedAt'], meta_prefix='club_', record_prefix='club_')
-    club_profiles_df['club_updatedAt'] = pd.to_datetime(club_profiles_df['club_updatedAt'], errors='coerce')
-
-    #####               Player Profile Clean Up                #####
-    players_profile_df = pd.json_normalize(players_profile_data['data'], sep='_')
-    players_profile_df.columns = players_profile_df.columns.str.replace('players','player')
-    #player_dateOfBirth
-    players_profile_df['player_dateOfBirth'] = pd.to_datetime(players_profile_df['player_dateOfBirth'], format='%b %d, %Y')
-
-    #player_age
-    players_profile_df['player_age'] = pd.to_numeric(players_profile_df['player_age'],downcast='integer')
+def process_club_profiles(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        df = pd.json_normalize(
+            data['data'],
+            'clubs',
+            ['seasonId', 'updatedAt'],
+            meta_prefix='club_',
+            record_prefix='club_'
+        )
+        df['club_updatedAt'] = pd.to_datetime(df['club_updatedAt'], errors='raise')
+        write_dataframe_to_s3(df, f'{output_prefix}/club_profiles_data/club_profile_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing club profiles: {e}", exc_info=True)
+        raise
 
 
-    # Step 1: Remove the "m" and replace the comma with a period
-    players_profile_df['player_height'] = players_profile_df['player_height'].fillna('').astype(str)
-    players_profile_df['player_height'] = players_profile_df['player_height'].str.replace('m', '').str.replace(',', '.')
-    players_profile_df['player_height'] = pd.to_numeric(players_profile_df['player_height'], errors='coerce')
-
-    #player_shirtNumber
-    players_profile_df['player_shirtNumber'] = players_profile_df['player_shirtNumber'].str.replace('#', '')
-
-    #player_club_joined
-    players_profile_df['player_club_joined'] = pd.to_datetime(players_profile_df['player_club_joined'], format='%b %d, %Y')
-
-    #player_club_contractExpires
-    players_profile_df['player_club_contractExpires'] = pd.to_datetime(players_profile_df['player_club_contractExpires'], format='%b %d, %Y')
-
-    #player_marketValue
-    players_profile_df['player_marketValue'] = players_profile_df['player_marketValue'].str.replace('€', '')
-    players_profile_df['player_marketValue'] = players_profile_df['player_marketValue'].fillna('').astype(str)
-    players_profile_df['player_marketValue'] = players_profile_df['player_marketValue'].map(lambda value: 
-        float(value.replace('k', '')) * 1000 if 'k' in value else
-        float(value.replace('m', '')) * 1000000 if 'm' in value else
-        float(value) if value != '' else float('nan')  # Handle empty string as NaN
-    )
-
-    #player_updatedAt
-    players_profile_df['player_updatedAt'] = pd.to_datetime(players_profile_df['player_updatedAt'])
-
-    #exploding nationality
-    citizenship_df = players_profile_df['player_citizenship'].apply(pd.Series)
-    citizenship_df.columns = [f'player_citizenship_{i+1}' for i in range(citizenship_df.shape[1])]
-    players_profile_df = pd.concat([players_profile_df, citizenship_df], axis=1)
-
-    #exploding player position
-    position_df = players_profile_df['player_position_other'].apply(pd.Series)
-    position_df.columns = [f'player_position_other_{i+1}' for i in range(position_df.shape[1])]
-    players_profile_df = pd.concat([players_profile_df, position_df], axis=1)
-
-    #drop dupe columns
-    players_profile_df = players_profile_df.loc[:, ~players_profile_df.columns.duplicated()]
-
-    ######              Players Stats Clean Up              ######
-    #Parse data
-    player_stats_dfs = [pd.json_normalize(row['players'],
-                        'stats',
-                        ['id', 'player_id','updatedAt'],
-                        sep='_', 
-                        meta_prefix='player_',
-                        record_prefix='player_',
-                        errors='ignore') 
-                        for row in player_stats_data['data'] if 'stats' in row['players']]
-    player_stats_df = pd.concat(player_stats_dfs, ignore_index=True)
-    
-    #Clean minutes played
-    player_stats_df['player_minutesPlayed'] = player_stats_df['player_minutesPlayed'].str.replace("'", "", regex=False)
-    player_stats_df['player_minutesPlayed'] = pd.to_numeric(player_stats_df['player_minutesPlayed'], errors='coerce')
-
-    #stats to numeric
-    player_stats_df['player_appearances'] = pd.to_numeric(player_stats_df['player_appearances'], errors='coerce')
-    player_stats_df['player_goalsConceded'] = pd.to_numeric(player_stats_df['player_goalsConceded'], errors='coerce')
-    player_stats_df['player_cleanSheets'] = pd.to_numeric(player_stats_df['player_cleanSheets'], errors='coerce')
-    player_stats_df['player_yellowCards'] = pd.to_numeric(player_stats_df['player_yellowCards'], errors='coerce')
-    player_stats_df['player_redCards'] = pd.to_numeric(player_stats_df['player_redCards'], errors='coerce')
-    player_stats_df['player_goals'] = pd.to_numeric(player_stats_df['player_goals'], errors='coerce')
-    player_stats_df['player_secondYellowCards'] = pd.to_numeric(player_stats_df['player_secondYellowCards'], errors='coerce')
-    player_stats_df['player_assists'] = pd.to_numeric(player_stats_df['player_assists'], errors='coerce')
+def process_players_profile(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        df = pd.json_normalize(data['data'], sep='_')
+        df.columns = df.columns.str.replace('players', 'player')
+        df['player_dateOfBirth'] = pd.to_datetime(df['player_dateOfBirth'], format='%Y-%m-%d', errors='raise')
+        df['player_age'] = pd.to_numeric(df['player_age'], downcast='integer', errors='raise')
+        df['player_height'] = (
+            df['player_height']
+            .fillna('')
+            .astype(str)
+            .str.replace('m', '')
+            .str.replace(',', '.')
+        )
+        df['player_height'] = pd.to_numeric(df['player_height'], errors='raise')
+        df['player_shirtNumber'] = df['player_shirtNumber'].str.replace('#', '')
+        df['player_club_joined'] = pd.to_datetime(df['player_club_joined'], format='%Y-%m-%d', errors='raise')
+        df['player_club_contractExpires'] = pd.to_datetime(df['player_club_contractExpires'], format='%Y-%m-%d', errors='raise')
+        df['player_marketValue'] = (
+            df['player_marketValue']
+            .fillna('')
+            .astype(str)
+            .str.replace('€', '')
+            .map(parse_market_value)
+        )
+        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        citizenship_df = df['player_citizenship'].apply(pd.Series)
+        citizenship_df.columns = [f'player_citizenship_{i+1}' for i in range(citizenship_df.shape[1])]
+        df = pd.concat([df, citizenship_df], axis=1)
+        position_df = df['player_position_other'].apply(pd.Series)
+        position_df.columns = [f'player_position_other_{i+1}' for i in range(position_df.shape[1])]
+        df = pd.concat([df, position_df], axis=1)
+        df = df.loc[:, ~df.columns.duplicated()]
+        write_dataframe_to_s3(df, f'{output_prefix}/player_profile_data/player_profile_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing players profile: {e}", exc_info=True)
+        raise
 
 
-    #Clean updatedAt
-    player_stats_df['player_updatedAt'] = pd.to_datetime(player_stats_df['player_updatedAt'], errors='coerce')
+def process_player_stats(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        stats_dfs = []
+        for row in data['data']:
+            if 'stats' in row['players']:
+                normalized = pd.json_normalize(
+                    row['players'],
+                    'stats',
+                    ['id', 'player_id', 'updatedAt'],
+                    sep='_',
+                    meta_prefix='player_',
+                    record_prefix='player_',
+                    errors='ignore'
+                )
+                stats_dfs.append(normalized)
+        if not stats_dfs:
+            raise ValueError("No player stats data available")
+        df = pd.concat(stats_dfs, ignore_index=True)
+        df['player_minutesPlayed'] = df['player_minutesPlayed'].astype(str).str.replace("'", "", regex=False)
+        df['player_minutesPlayed'] = pd.to_numeric(df['player_minutesPlayed'], errors='coerce')
+        for col in ['player_appearances', 'player_goalsConceded', 'player_cleanSheets',
+                    'player_yellowCards', 'player_redCards', 'player_goals',
+                    'player_secondYellowCards', 'player_assists']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='raise')
+        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        write_dataframe_to_s3(df, f'{output_prefix}/player_stats_data/player_stats_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing player stats: {e}", exc_info=True)
+        raise
 
-    ######              Players Achievements Clean Up              ######
-    players_achievements_dfs = [pd.json_normalize(player['players'],['achievements',['details']], ['id',['achievements','title'],['achievements','count'],'updatedAt'], sep='_', meta_prefix='player_',record_prefix='player_', errors='ignore') for player in players_achievements_data['data'] if 'achievements' in player['players']]
-    players_achievements_df = pd.concat(players_achievements_dfs, ignore_index=True)
 
-    #Clean updatedAt
-    players_achievements_df['player_updatedAt'] = pd.to_datetime(players_achievements_df['player_updatedAt'], errors='coerce')
+def process_players_achievements(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        achievements_dfs = []
+        for player in data['data']:
+            if 'achievements' in player['players']:
+                normalized = pd.json_normalize(
+                    player['players'],
+                    ['achievements', ['details']],
+                    ['id', ['achievements', 'title'], ['achievements', 'count'], 'updatedAt'],
+                    sep='_',
+                    meta_prefix='player_',
+                    record_prefix='player_',
+                    errors='raise'
+                )
+                achievements_dfs.append(normalized)
+        if not achievements_dfs:
+            raise ValueError("No player achievements data available")
+        df = pd.concat(achievements_dfs, ignore_index=True)
+        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        write_dataframe_to_s3(df, f'{output_prefix}/player_achievements_data/player_achievements_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing player achievements: {e}", exc_info=True)
+        raise
 
 
-    ######              Players Data Clean Up              ######
-    players_dfs = [pd.json_normalize(player['players'],['players'],['updatedAt'], sep='_', meta_prefix='player_', record_prefix='player_') for player in players_data['data']]
-    players_df = pd.concat(players_dfs, ignore_index=True)
+def process_players_data(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        players_dfs = []
+        for player in data['data']:
+            normalized = pd.json_normalize(
+                player['players'],
+                ['players'],
+                ['updatedAt'],
+                sep='_',
+                meta_prefix='player_',
+                record_prefix='player_',
+                errors='raise'
+            )
+            players_dfs.append(normalized)
+        if not players_dfs:
+            raise ValueError("No players data available")
+        df = pd.concat(players_dfs, ignore_index=True)
+        df['player_dateOfBirth'] = pd.to_datetime(df['player_dateOfBirth'], format='%Y-%m-%d', errors='raise')
+        df['player_age'] = pd.to_numeric(df['player_age'], downcast='integer', errors='raise')
+        df['player_height'] = (
+            df['player_height']
+            .fillna('')
+            .astype(str)
+            .str.replace('m', '')
+            .str.replace(',', '.')
+        )
+        df['player_height'] = pd.to_numeric(df['player_height'], errors='raise')
+        # Use ISO format for joinedOn and contract since data like "2019-12-23" is provided.
+        df['player_joinedOn'] = pd.to_datetime(df['player_joinedOn'], format='%Y-%m-%d', errors='raise')
+        df['player_contract'] = pd.to_datetime(df['player_contract'], format='%Y-%m-%d', errors='raise')
+        df['player_marketValue'] = (
+            df['player_marketValue']
+            .fillna('')
+            .astype(str)
+            .str.replace('€', '')
+            .map(parse_market_value)
+        )
+        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        citizenship_df = df['player_nationality'].apply(pd.Series)
+        citizenship_df.columns = [f'player_nationality_{i+1}' for i in range(citizenship_df.shape[1])]
+        df = pd.concat([df, citizenship_df], axis=1)
+        write_dataframe_to_s3(df, f'{output_prefix}/players_data/club_players_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing players data: {e}", exc_info=True)
+        raise
 
-    #player_dateOfBirth
-    players_df['player_dateOfBirth'] = pd.to_datetime(players_df['player_dateOfBirth'], format='%b %d, %Y')
 
-    #player_age
-    players_df['player_age'] = pd.to_numeric(players_df['player_age'],downcast='integer')
+def process_players_injuries(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        injuries_dfs = []
+        for player in data['data']:
+            if 'injuries' in player['players']:
+                normalized = pd.json_normalize(
+                    player['players'],
+                    ['injuries'],
+                    ['updatedAt', 'id'],
+                    sep='_',
+                    meta_prefix='player_',
+                    record_prefix='player_',
+                    errors='raise'
+                )
+                injuries_dfs.append(normalized)
+        if not injuries_dfs:
+            raise ValueError("No player injuries data available")
+        df = pd.concat(injuries_dfs, ignore_index=True)
+        # Rename JSON keys (with record prefix) to our expected column names.
+        df = df.rename(columns={
+            'player_fromDate': 'player_from',
+            'player_untilDate': 'player_until',
+            'player_days': 'player_days',
+            'player_gamesMissed': 'player_gamesMissed',
+            'player_gamesMissedClubs': 'player_gamesMissedClubs'
+        })
+        # Check for required columns and abort if any are missing.
+        required_columns = ['player_from', 'player_until', 'player_days', 'player_gamesMissed', 'player_gamesMissedClubs']
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns in injuries data: {missing}")
+        
+        df['player_from'] = pd.to_datetime(df['player_from'], format='%Y-%m-%d', errors='raise')
+        df['player_until'] = pd.to_datetime(df['player_until'], format='%Y-%m-%d', errors='raise')
+        df['player_days'] = df['player_days'].apply(lambda x: str(x).replace(' days', ''))
+        df['player_days'] = pd.to_numeric(df['player_days'], errors='raise', downcast='integer')
+        df['player_gamesMissed'] = pd.to_numeric(df['player_gamesMissed'], errors='raise', downcast='integer')
+        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        games_missed_df = df['player_gamesMissedClubs'].apply(pd.Series)
+        games_missed_df.columns = [f'player_gamesMissedClubs_{i+1}' for i in range(games_missed_df.shape[1])]
+        df = pd.concat([df, games_missed_df], axis=1)
+        write_dataframe_to_s3(df, f'{output_prefix}/player_injuries_data/player_injuries_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing player injuries: {e}", exc_info=True)
+        raise
 
-    # Step 1: Remove the "m" and replace the comma with a period
-    players_df['player_height'] = players_df['player_height'].fillna('').astype(str)
-    players_df['player_height'] = players_df['player_height'].str.replace('m', '').str.replace(',', '.')
-    players_df['player_height'] = pd.to_numeric(players_df['player_height'], errors='coerce')
+
+def process_players_market_value(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        df = pd.json_normalize(data['data'], sep='_', errors='raise')
+        market_value_history = []
+        for history, player_id in zip(df.get('players_marketValueHistory', []), df.get('player_id', [])):
+            if isinstance(history, list):
+                normalized = pd.json_normalize(history, errors='raise')
+                normalized['id'] = player_id
+                normalized.columns = [f'player_{col}' for col in normalized.columns]
+                market_value_history.append(normalized)
+        if market_value_history:
+            history_df = pd.concat(market_value_history, ignore_index=True)
+            merged_df = df.merge(history_df, on='player_id', how='left')
+            merged_df.drop(columns=['players_id', 'players_marketValueHistory'], inplace=True, errors='ignore')
+        else:
+            merged_df = df
+        merged_df.columns = [col.replace('players', 'player') for col in merged_df.columns]
+        merged_df.columns = [col.replace(' ', '_').replace('-', '_').replace(',', '').replace('.', '').lower()
+                             for col in merged_df.columns]
+        merged_df['player_age'] = pd.to_numeric(merged_df['player_age'], downcast='integer', errors='raise')
+        for col in merged_df.columns:
+            if 'ranking' in col and 'worldwide' not in col:
+                merged_df[col] = pd.to_numeric(merged_df[col], downcast='integer', errors='raise')
+            elif 'ranking_worldwide' in col:
+                merged_df[col] = pd.to_numeric(merged_df[col], downcast='float', errors='raise')
+        if 'player_date' in merged_df.columns:
+            merged_df['player_date'] = pd.to_datetime(merged_df['player_date'], format='%Y-%m-%d', errors='raise')
+        if 'player_marketvalue' in merged_df.columns:
+            pmv = merged_df.get('player_marketvalue')
+            if isinstance(pmv, pd.DataFrame):
+                pmv = pmv.iloc[:, 0]
+            merged_df['player_marketvalue'] = (
+                pmv.fillna('')
+                .astype(str)
+                .str.replace('€', '')
+                .map(parse_market_value)
+            )
+        if 'player_value' in merged_df.columns:
+            pv = merged_df.get('player_value')
+            if isinstance(pv, pd.DataFrame):
+                pv = pv.iloc[:, 0]
+            merged_df['player_value'] = (
+                pv.fillna('')
+                .astype(str)
+                .str.replace('€', '')
+                .map(parse_market_value)
+            )
+        if 'player_updatedat' in merged_df.columns:
+            merged_df['player_updatedat'] = pd.to_datetime(merged_df['player_updatedat'], errors='raise')
+        write_dataframe_to_s3(merged_df, f'{output_prefix}/player_market_value_data/player_market_value_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return merged_df
+    except Exception as e:
+        logging.error(f"Error processing player market value data: {e}", exc_info=True)
+        raise
 
 
-    #player_club_joined
-    players_df['player_joinedOn'] = pd.to_datetime(players_df['player_joinedOn'], format='%b %d, %Y')
+def process_players_transfers(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        transfers_dfs = []
+        for player in data['data']:
+            normalized = pd.json_normalize(
+                player['players'],
+                ['transfers'],
+                ['id', 'updatedAt'],
+                sep='_',
+                record_prefix='player_',
+                meta_prefix='players_',
+                errors='raise'
+            )
+            transfers_dfs.append(normalized)
+        if not transfers_dfs:
+            raise ValueError("No player transfers data available")
+        df = pd.concat(transfers_dfs, ignore_index=True)
+        df['player_date'] = pd.to_datetime(df['player_date'], format='%Y-%m-%d', errors='raise')
+        df['player_marketValue'] = (
+            df['player_marketValue']
+            .fillna('')
+            .astype(str)
+            .str.replace('€', '')
+            .map(parse_market_value)
+        )
+        df.columns = [col.replace('players', 'player') for col in df.columns]
+        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        write_dataframe_to_s3(df, f'{output_prefix}/player_transfers_data/player_transfers_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing player transfers: {e}", exc_info=True)
+        raise
 
-    #player_club_contractExpires
-    players_df['player_contract'] = pd.to_datetime(players_df['player_contract'], format='%b %d, %Y')
 
-    #player_marketValue
-    players_df['player_marketValue'] = players_df['player_marketValue'].str.replace('€', '')
-    players_df['player_marketValue'] = players_df['player_marketValue'].fillna('').astype(str)
-    players_df['player_marketValue'] = players_df['player_marketValue'].map(lambda value: 
-        float(value.replace('k', '')) * 1000 if 'k' in value else
-        float(value.replace('m', '')) * 1000000 if 'm' in value else
-        float(value) if value != '' else float('nan')  # Handle empty string as NaN
-    )
+def process_league_data(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
+    try:
+        df = pd.json_normalize(data, errors='raise')
+        df = df.dropna(subset=['position'])
+        df = df.dropna(axis=1, how='all')
+        if 'goals' in df.columns:
+            df[['goals_scored', 'goals_conceded']] = df['goals'].str.split(':', expand=True)
+            df['goals_scored'] = pd.to_numeric(df['goals_scored'], errors='raise')
+            df['goals_conceded'] = pd.to_numeric(df['goals_conceded'], errors='raise')
+        df['league_updated_at'] = pd.to_datetime(datetime.now())
+        write_dataframe_to_s3(df, f'{output_prefix}/league_data/league_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        return df
+    except Exception as e:
+        logging.error(f"Error processing league data: {e}", exc_info=True)
+        raise
 
-    #player_updatedAt
-    players_df['player_updatedAt'] = pd.to_datetime(players_df['player_updatedAt'])
 
-    #exploding nationality
-    citizenship_df = players_df['player_nationality'].apply(pd.Series)
-    citizenship_df.columns = [f'player_nationality_{i+1}' for i in range(citizenship_df.shape[1])]
-    players_df = pd.concat([players_df, citizenship_df], axis=1) 
+# --- Main ETL Execution ---
 
-    ######              Players Injuries Clean Up              ######
-    players_injuries_dfs = [pd.json_normalize(player['players'],['injuries'],['updatedAt','id'], sep='_', meta_prefix='player_', record_prefix='player_') for player in players_injuries_data['data'] if 'injuries' in player['players']]
-    players_injuries_df = pd.concat(players_injuries_dfs, ignore_index=True)
+def main() -> None:
+    start_time = time.time()
+    current_date = str(datetime.now().date())
+    output_prefix = "transformed_data"
 
-    #player_from
-    players_injuries_df['player_from'] = pd.to_datetime(players_injuries_df['player_from'], format='%b %d, %Y')
+    try:
+        club_profiles_data = read_json_from_s3('raw_data/club_profiles_data/', S3_BUCKET_NAME)
+        players_profile_data = read_json_from_s3('raw_data/players_profile_data/', S3_BUCKET_NAME)
+        player_stats_data = read_json_from_s3('raw_data/player_stats_data/', S3_BUCKET_NAME)
+        players_achievements_data = read_json_from_s3('raw_data/players_achievements_data/', S3_BUCKET_NAME)
+        players_data = read_json_from_s3('raw_data/players_data/', S3_BUCKET_NAME)
+        players_injuries_data = read_json_from_s3('raw_data/players_injuries_data/', S3_BUCKET_NAME)
+        players_market_value_data = read_json_from_s3('raw_data/players_market_value_data/', S3_BUCKET_NAME)
+        players_transfers_data = read_json_from_s3('raw_data/players_transfers_data/', S3_BUCKET_NAME)
+        leagues_table_data = read_json_from_s3('raw_data/league_data/', S3_BUCKET_NAME)
 
-    #player_until
-    players_injuries_df['player_until'] = pd.to_datetime(players_injuries_df['player_until'], format='%b %d, %Y')
+        if club_profiles_data is None:
+            raise ValueError("Club profiles data is missing.")
+        if players_profile_data is None:
+            raise ValueError("Players profile data is missing.")
+        if player_stats_data is None:
+            raise ValueError("Player stats data is missing.")
+        if players_achievements_data is None:
+            raise ValueError("Players achievements data is missing.")
+        if players_data is None:
+            raise ValueError("Players data is missing.")
+        if players_injuries_data is None:
+            raise ValueError("Players injuries data is missing.")
+        if players_market_value_data is None:
+            raise ValueError("Players market value data is missing.")
+        if players_transfers_data is None:
+            raise ValueError("Players transfers data is missing.")
+        if leagues_table_data is None:
+            raise ValueError("League data is missing.")
 
-    #player_days
-    players_injuries_df['player_days'] = players_injuries_df['player_days'].str.replace(' days', '', regex=False)
-    players_injuries_df['player_days'] = pd.to_numeric(players_injuries_df['player_days'], errors='coerce', downcast='integer')
+        process_club_profiles(club_profiles_data, output_prefix, current_date)
+        process_players_profile(players_profile_data, output_prefix, current_date)
+        process_player_stats(player_stats_data, output_prefix, current_date)
+        process_players_achievements(players_achievements_data, output_prefix, current_date)
+        process_players_injuries(players_injuries_data, output_prefix, current_date)
+        process_players_market_value(players_market_value_data, output_prefix, current_date)
+        process_players_transfers(players_transfers_data, output_prefix, current_date)
+        process_players_data(players_data, output_prefix, current_date)
+        process_league_data(leagues_table_data, output_prefix, current_date)
 
-    #player_games_missed
-    players_injuries_df['player_gamesMissed'] = pd.to_numeric(players_injuries_df['player_gamesMissed'], errors='coerce', downcast='integer')
+    except Exception as e:
+        logging.error("One or more transformations failed. Aborting crawler execution.", exc_info=True)
+        return
 
-    #player_updatedAt
-    players_injuries_df['player_updatedAt'] = pd.to_datetime(players_injuries_df['player_updatedAt'])
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/club_profiles_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_profile_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_stats_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_achievements_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_injuries_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_transfers_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/players_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_market_value_data')
+    delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/league_data')
 
-    #exploding nationality
-    gamesMissedClubs_df = players_injuries_df['player_gamesMissedClubs'].apply(pd.Series)
-    gamesMissedClubs_df.columns = [f'player_gamesMissedClubs_{i+1}' for i in range(gamesMissedClubs_df.shape[1])]
-    players_injuries_df = pd.concat([players_injuries_df, gamesMissedClubs_df], axis=1)
-
-    ######              Players Market value Clean Up              ######
-    players_market_value_df = pd.json_normalize(players_market_value_data['data'], sep='_', errors='ignore')
-
-    market_value_history = []
-
-    # Iterate over 'players_marketValueHistory' and 'player_id' columns together using zip
-    for history, player_id in zip(players_market_value_df['players_marketValueHistory'], players_market_value_df['player_id']):
-        if isinstance(history, list):  # Ensure history is a list before normalizing
-            # Normalize the history list and add player_id as a new column in each normalized DataFrame
-            market_value_history_data = pd.json_normalize(history, errors='ignore')
-            market_value_history_data['id'] = player_id
-            
-            # Rename columns with the desired prefix
-            market_value_history_data.columns = [f'player_{col}' for col in market_value_history_data.columns]
-            
-            # Append the normalized data to the list
-            market_value_history.append(market_value_history_data)
-
-    # Concatenate all normalized DataFrames
-    players_market_value_history_df = pd.concat(market_value_history, ignore_index=True)
-
-    #Build final df
-    players_market_value_df = players_market_value_df.merge(players_market_value_history_df, on='player_id', how='left').drop(columns=['players_id','players_marketValueHistory'])
-
-    #Clean up columns
-    players_market_value_df.columns = [col.replace('players', 'player') for col in players_market_value_df.columns]
-    players_market_value_df.columns = [
-        col.replace(' ', '_')
-        .replace('-', '_')
-        .replace(',', '')
-        .replace('.', '')
-        .lower()
-        for col in players_market_value_df.columns
+    crawler_names = [
+        'club_profile_crawler',
+        'league_data_crawler',
+        'players_data_crawler',
+        'player_achievements_crawler',
+        'player_injuries_crawler',
+        'player_market_value_crawler',
+        'player_profile_crawler',
+        'player_stats_crawler',
+        'player_transfers_crawler'
     ]
+    for crawler in crawler_names:
+        start_crawler(crawler)
 
-    #player_age
-    players_market_value_df['player_age'] = pd.to_numeric(players_market_value_df['player_age'], downcast='integer')
-
-    #player_rankings
-    for col in players_market_value_df.columns:
-        if 'ranking' in col and 'Worldwide' not in col:
-            players_market_value_df[col] = pd.to_numeric(players_market_value_df[col], downcast='integer')
-        elif 'ranking_Worldwide' in col:
-            players_market_value_df[col] = pd.to_numeric(players_market_value_df[col], downcast='float')
-
-    #player_club_joined
-    players_market_value_df['player_date'] = pd.to_datetime(players_market_value_df['player_date'], format='%b %d, %Y')
-
-    #player_marketValue
-    players_market_value_df['player_marketvalue'] = players_market_value_df['player_marketvalue'].str.replace('€', '')
-    players_market_value_df['player_marketvalue'] = players_market_value_df['player_marketvalue'].fillna('').astype(str)
-    players_market_value_df['player_marketvalue'] = players_market_value_df['player_marketvalue'].map(lambda value: 
-        float(value.replace('k', '')) * 1000 if 'k' in value else
-        float(value.replace('m', '')) * 1000000 if 'm' in value else
-        float(value) if value != '' else float('nan')  # Handle empty string as NaN
-    )
-
-    #player_value
-    players_market_value_df['player_value'] = players_market_value_df['player_value'].str.replace('€', '')
-    players_market_value_df['player_value'] = players_market_value_df['player_value'].fillna('').astype(str)
-    players_market_value_df['player_value'] = players_market_value_df['player_value'].map(lambda value: 
-        float(value.replace('k', '')) * 1000 if 'k' in value else
-        float(value.replace('m', '')) * 1000000 if 'm' in value else
-        float(value) if value != '' else float('nan')  # Handle empty string as NaN
-    )
-
-    #player_updatedAt
-    players_market_value_df['player_updatedat'] = pd.to_datetime(players_market_value_df['player_updatedat'])
-
-    ######              Players Transfer Data Clean Up              ######
-    players_transfers_dfs = [pd.json_normalize(player['players'],['transfers'],['id','updatedAt'], sep='_', record_prefix='player_', meta_prefix='players_') for player in players_transfers_data['data']]
-    players_transfers_df = pd.concat(players_transfers_dfs, ignore_index=True)
-
-    #player_dateOfBirth
-    players_transfers_df['player_date'] = pd.to_datetime(players_transfers_df['player_date'], format='%b %d, %Y')
-
-    #player_marketValue
-    players_transfers_df['player_marketValue'] = players_transfers_df['player_marketValue'].str.replace('€', '')
-    players_transfers_df['player_marketValue'] = players_transfers_df['player_marketValue'].fillna('').astype(str)
-    players_transfers_df['player_marketValue'] = players_transfers_df['player_marketValue'].map(lambda value: 
-        float(value.replace('k', '')) * 1000 if 'k' in value else
-        float(value.replace('m', '')) * 1000000 if 'm' in value else
-        float(value) if value != '' else float('nan')  # Handle empty string as NaN
-    )
-
-    #Columns rename
-    players_transfers_df.columns = [col.replace('players', 'player') for col in players_transfers_df.columns]
-
-    #player_updatedAt
-    players_transfers_df['player_updatedAt'] = pd.to_datetime(players_transfers_df['player_updatedAt'])
-    
-    ######              League Data Clean Up              ######
-    # Read the dictionary into a DataFrame
-    league_df = pd.json_normalize(leagues_table_data)
-
-    # Drop rows where 'position' is null
-    league_df = league_df.dropna(subset=['position'])
-
-    # Drop columns that contain only NaN values
-    league_df = league_df.dropna(axis=1, how='all')
-
-    # Split the 'goals' column into 'goals_scored' and 'goals_conceded'
-    league_df[['goals_scored', 'goals_conceded']] = league_df['goals'].str.split(':', expand=True)
-
-    # Convert the new columns to numeric values
-    league_df['goals_scored'] = pd.to_numeric(league_df['goals_scored'], errors='coerce')
-    league_df['goals_conceded'] = pd.to_numeric(league_df['goals_conceded'], errors='coerce')
-
-    # Add the timestamp as a new column to the DataFrame
-    league_df['league_updated_at'] = pd.to_datetime(datetime.now())
-
-    #write to S3 club_profiles_data
-    write_dataframe_to_s3(club_profiles_df,f'transformed_data/club_profiles_data/club_profile_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(players_profile_df,f'transformed_data/player_profile_data/player_profile_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(player_stats_df,f'transformed_data/player_stats_data/player_stats_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(players_achievements_df,f'transformed_data/player_achievements_data/player_achievements_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(players_injuries_df,f'transformed_data/player_injuries_data/player_injuries_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(players_market_value_df,f'transformed_data/player_market_value_data/player_market_value_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(players_transfers_df,f'transformed_data/player_transfers_data/player_transfers_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(players_df,f'transformed_data/players_data/club_players_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
-    write_dataframe_to_s3(league_df,f'transformed_data/league_data/league_data_transformed_{str(datetime.now().date())}.csv',s3_bucket_name)
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    logging.info(f"Script executed in {elapsed_time:.2f} seconds")
 
 
-    #Remove old
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/club_profiles_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_profile_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_stats_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_achievements_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_injuries_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_stats_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_transfers_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/players_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/player_market_value_data')
-    delete_all_except_last_n(s3_bucket_name, 1, 'transformed_data/league_data')
-
-    #Start Crawler
-    start_crawler('club_profile_crawler')
-    start_crawler('league_data_crawler')
-    start_crawler('players_data_crawler')
-    start_crawler('player_achievements_crawler')
-    start_crawler('player_injuries_crawler')
-    start_crawler('player_market_value_crawler')
-    start_crawler('player_profile_crawler')
-    start_crawler('player_stats_crawler')
-    start_crawler('player_transfers_crawler')
-
-# Start time
-start_time = time.time()
-logging.info(f'Script started {str(start_time)}')
-
-main()
-
-# End time and elapsed time
-end_time = time.time()
-elapsed_time = end_time - start_time
-logging.info(f'Script ended {str(elapsed_time)}')
-
+if __name__ == '__main__':
+    main()
