@@ -118,14 +118,6 @@ def delete_all_except_last_n(bucket_name: str, files_to_keep: int, folder_name: 
     except Exception as e:
         logging.error(f"Error deleting files in {folder_name}: {e}", exc_info=True)
 
-
-def start_crawler(crawler_name: str) -> Dict[str, Any]:
-    """Start an AWS Glue crawler."""
-    logging.info(f"Starting crawler: {crawler_name}")
-    response = glue_client.start_crawler(Name=crawler_name)
-    return response
-
-
 # --- Data Processing Functions ---
 
 def process_club_profiles(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
@@ -398,6 +390,7 @@ def process_players_market_value(data: Dict[str, Any], output_prefix: str, curre
         raise
 
 
+
 def process_players_transfers(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
     try:
         transfers_dfs = []
@@ -527,20 +520,6 @@ def main() -> None:
     delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/player_market_value_data')
     delete_all_except_last_n(S3_BUCKET_NAME, 1, 'transformed_data/league_data')
 
-    crawler_names = [
-        'club_profile_crawler',
-        'league_data_crawler',
-        'players_data_crawler',
-        'player_achievements_crawler',
-        'player_injuries_crawler',
-        'player_market_value_crawler',
-        'player_profile_crawler',
-        'player_stats_crawler',
-        'player_transfers_crawler'
-    ]
-    for crawler in crawler_names:
-        start_crawler(crawler)
-
     end_time = time.time()
     elapsed_time = end_time - start_time
     logging.info(f"Script executed in {elapsed_time:.2f} seconds")
@@ -548,3 +527,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+

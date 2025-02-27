@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application scripts
 COPY transfer_mkt_players.py /app/
 COPY transfer_mkt_transform.py /app/
+COPY transfer_mkt_loader.py /app/
+
 
 # Define ENV variables (placeholders)
 ENV AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
