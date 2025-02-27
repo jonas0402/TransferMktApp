@@ -423,8 +423,8 @@ def process_players_transfers(data: Dict[str, Any], output_prefix: str, current_
         # - Then replace any other occurrence of 'players' with 'player'
         new_columns = []
         for col in df.columns:
-            if col == 'players_id':
-                new_columns.append('club_id')
+            if col == 'player_id':
+                new_columns.append('transaction_id')
             else:
                 new_columns.append(col.replace('players', 'player'))
         df.columns = new_columns
