@@ -415,6 +415,7 @@ def process_players_transfers(data: Dict[str, Any], output_prefix: str, current_
         if not transfers_dfs:
             raise ValueError("No player transfers data available")
         df = pd.concat(transfers_dfs, ignore_index=True)
+        
         df['player_date'] = pd.to_datetime(df['player_date'], format='%Y-%m-%d', errors='raise')
         df['player_marketValue'] = (
             df['player_marketValue']
@@ -423,13 +424,29 @@ def process_players_transfers(data: Dict[str, Any], output_prefix: str, current_
             .str.replace('€', '')
             .map(parse_market_value)
         )
-        df.columns = [col.replace('players', 'player') for col in df.columns]
+        
+        # Rename columns:
+        # - First, rename 'players_id' to 'club_id'
+        # - Then replace any other occurrence of 'players' with 'player'
+        new_columns = []
+        for col in df.columns:
+            if col == 'players_id':
+                new_columns.append('club_id')
+            else:
+                new_columns.append(col.replace('players', 'player'))
+        df.columns = new_columns
+
         df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
-        write_dataframe_to_s3(df, f'{output_prefix}/player_transfers_data/player_transfers_data_transformed_{current_date}.csv', S3_BUCKET_NAME)
+        write_dataframe_to_s3(
+            df,
+            f'{output_prefix}/player_transfers_data/player_transfers_data_transformed_{current_date}.csv',
+            S3_BUCKET_NAME
+        )
         return df
     except Exception as e:
         logging.error(f"Error processing player transfers: {e}", exc_info=True)
         raise
+
 
 
 def process_league_data(data: Dict[str, Any], output_prefix: str, current_date: str) -> pd.DataFrame:
