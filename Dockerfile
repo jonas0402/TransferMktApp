@@ -17,4 +17,3 @@ ENV AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
 
 # Default command
 CMD ["python", "transfer_mkt_players.py"]
-#CMD ["python", "transfer_mkt_transform.py"]
