@@ -192,7 +192,7 @@ def process_player_stats(data: Dict[str, Any], output_prefix: str, current_date:
                 normalized = pd.json_normalize(
                     row['players'],
                     'stats',
-                    ['id', 'player_id', 'updatedAt'],
+                    ['id', 'updatedAt'],
                     sep='_',
                     meta_prefix='player_',
                     record_prefix='player_',
