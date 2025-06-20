@@ -54,7 +54,7 @@ class PlayerDataManager:
     @log_execution_time
     def get_club_players(self, club_ids: List[str]) -> Dict[str, Any]:
         """
-        Retrieve players for each club sequentially to avoid API overload.
+        Retrieve players for each club sequentially with circuit breaker pattern.
         
         Args:
             club_ids: List of club IDs
@@ -65,16 +65,36 @@ class PlayerDataManager:
         data_dict = {"data": []}
         successful_clubs = 0
         failed_clubs = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 5  # Circuit breaker threshold
         
         for i, club_id in enumerate(club_ids):
+            # Circuit breaker: if too many consecutive failures, pause longer
+            if consecutive_failures >= max_consecutive_failures:
+                logging.warning(f"Circuit breaker activated after {consecutive_failures} consecutive failures. "
+                               f"Waiting 30 seconds before continuing...")
+                import time
+                time.sleep(30)
+                consecutive_failures = 0  # Reset counter
+            
             endpoint = f"clubs/{club_id}/players"
             try:
                 logging.info(f"Fetching players for club {i+1}/{len(club_ids)}: {club_id}")
                 response_data = self.api_client.make_request(endpoint)
+                
                 if not response_data:
                     failed_clubs += 1
-                    logging.warning(f"No data returned for club ID: {club_id}")
+                    consecutive_failures += 1
+                    logging.warning(f"❌ No data returned for club ID: {club_id}")
+                    
+                    # Skip to next club
+                    if i < len(club_ids) - 1:
+                        import time
+                        time.sleep(Config.RATE_LIMIT_DELAY)
                     continue
+                
+                # Success - reset consecutive failure counter
+                consecutive_failures = 0
                 
                 club_player_data = {
                     "club_id": club_id,
@@ -83,18 +103,35 @@ class PlayerDataManager:
                 data_dict["data"].append(club_player_data)
                 self.player_ids.extend([player['id'] for player in response_data['players']])
                 successful_clubs += 1
-                logging.info(f"✓ Fetched {len(response_data['players'])} players for club ID: {club_id}")
+                logging.info(f"✅ Fetched {len(response_data['players'])} players for club ID: {club_id}")
                 
-                # Add delay between club requests to be gentle on the API
-                if i < len(club_ids) - 1:  # Don't delay after the last request
+                # Add delay between club requests
+                if i < len(club_ids) - 1:
                     import time
                     time.sleep(Config.RATE_LIMIT_DELAY)
                     
             except Exception as e:
                 failed_clubs += 1
-                logging.error(f"Error fetching players for club ID {club_id}: {e}")
+                consecutive_failures += 1
+                logging.error(f"❌ Error fetching players for club ID {club_id}: {e}")
+                
+                # Add delay even on error
+                if i < len(club_ids) - 1:
+                    import time
+                    time.sleep(Config.RATE_LIMIT_DELAY)
         
-        logging.info(f"Club players fetch summary: {successful_clubs} successful, {failed_clubs} failed")
+        # Summary with recommendations
+        total_clubs = len(club_ids)
+        success_rate = (successful_clubs / total_clubs) * 100
+        
+        logging.info(f"📊 Club players fetch summary:")
+        logging.info(f"   ✅ Successful: {successful_clubs}/{total_clubs} ({success_rate:.1f}%)")
+        logging.info(f"   ❌ Failed: {failed_clubs}/{total_clubs}")
+        logging.info(f"   👥 Total players collected: {len(self.player_ids)}")
+        
+        if success_rate < 70:
+            logging.warning("⚠️  Low success rate detected. API may be experiencing issues.")
+        
         return data_dict
     
     @log_execution_time
