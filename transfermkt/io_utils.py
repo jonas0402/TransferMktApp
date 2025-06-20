@@ -364,13 +364,39 @@ class APIClient:
                     timeout=Config.REQUEST_TIMEOUT
                 )
                 
+                # Log response details for debugging
+                logging.debug(f"Response status: {response.status_code}, "
+                             f"Content-Type: {response.headers.get('content-type', 'unknown')}, "
+                             f"Content length: {len(response.text)}")
+                
                 # Handle different status codes
                 if response.status_code == 200:
                     try:
-                        return response.json()
+                        # Check if response is empty or whitespace
+                        if not response.text or response.text.strip() == "":
+                            logging.error(f"Empty response from {endpoint}")
+                            if not self._should_retry(503, attempt):  # Treat as server error
+                                return None
+                            continue
+                        
+                        # Check if response looks like HTML (error page)
+                        content_type = response.headers.get('content-type', '').lower()
+                        if 'html' in content_type or response.text.strip().startswith('<'):
+                            logging.error(f"Received HTML response instead of JSON from {endpoint}. "
+                                        f"First 200 chars: {response.text[:200]}")
+                            if not self._should_retry(503, attempt):  # Treat as server error
+                                return None
+                            continue
+                        
+                        # Try to parse JSON
+                        json_response = response.json()
+                        logging.debug(f"Successfully parsed JSON response from {endpoint}")
+                        return json_response
+                        
                     except ValueError as e:
-                        logging.error(f"Invalid JSON response from {endpoint}: {e}")
-                        if not self._should_retry(response.status_code, attempt):
+                        logging.error(f"Invalid JSON response from {endpoint}: {e}. "
+                                    f"Response content (first 200 chars): {response.text[:200]}")
+                        if not self._should_retry(503, attempt):  # Treat as server error
                             return None
                         continue
                 
@@ -379,7 +405,18 @@ class APIClient:
                     return None  # Don't retry 404s
                 
                 elif response.status_code == 429:
-                    logging.warning(f"Rate limited (429) for endpoint: {endpoint}")
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after:
+                        try:
+                            wait_time = int(retry_after)
+                            logging.warning(f"Rate limited (429) for endpoint: {endpoint}. "
+                                          f"Retry-After header suggests waiting {wait_time} seconds")
+                            time.sleep(wait_time)
+                        except ValueError:
+                            pass
+                    else:
+                        logging.warning(f"Rate limited (429) for endpoint: {endpoint}")
+                    
                     if not self._should_retry(response.status_code, attempt):
                         logging.error(f"Max retries exceeded for rate limiting on {endpoint}")
                         return None
@@ -387,7 +424,8 @@ class APIClient:
                 elif self._should_retry(response.status_code, attempt):
                     logging.warning(
                         f"API call failed with status {response.status_code} for {endpoint}. "
-                        f"Attempt {attempt + 1}/{Config.MAX_RETRIES + 1}. Response: {response.text[:200]}"
+                        f"Attempt {attempt + 1}/{Config.MAX_RETRIES + 1}. "
+                        f"Response: {response.text[:200]}"
                     )
                 else:
                     logging.error(
@@ -414,6 +452,42 @@ class APIClient:
         
         logging.error(f"All retry attempts failed for {endpoint}")
         return None
+    
+    def test_api_connectivity(self) -> bool:
+        """
+        Test basic API connectivity and response format.
+        
+        Returns:
+            True if API is responding correctly, False otherwise
+        """
+        test_endpoint = "competitions"  # Simple endpoint to test connectivity
+        
+        try:
+            logging.info(f"Testing API connectivity with endpoint: {test_endpoint}")
+            response = self.session.get(
+                f"{self.base_url}{test_endpoint}",
+                timeout=Config.REQUEST_TIMEOUT
+            )
+            
+            logging.info(f"API test response - Status: {response.status_code}, "
+                        f"Content-Type: {response.headers.get('content-type', 'unknown')}, "
+                        f"Content length: {len(response.text)}")
+            
+            if response.status_code == 200:
+                try:
+                    response.json()
+                    logging.info("API connectivity test successful")
+                    return True
+                except ValueError:
+                    logging.error(f"API returned non-JSON response: {response.text[:200]}")
+                    return False
+            else:
+                logging.error(f"API connectivity test failed with status: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"API connectivity test failed with exception: {e}")
+            return False
     
     def make_request_with_fallback(self, endpoint: str, fallback_value: Any = None) -> Any:
         """

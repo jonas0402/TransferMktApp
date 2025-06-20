@@ -217,19 +217,36 @@ class PlayerDataManager:
         competition_code = competition_code or Config.DEFAULT_COMPETITION_CODE
         league_name = league_name or Config.DEFAULT_LEAGUE_NAME
         
-        # Step 1: Get club data
         logging.info("Starting data extraction process...")
+        
+        # Step 0: Test API connectivity first
+        if not self.api_client.test_api_connectivity():
+            logging.error("API connectivity test failed. The API may be down or returning invalid responses.")
+            # Don't fail completely - try to continue with degraded functionality
+            logging.warning("Continuing with limited functionality...")
+        
+        # Step 1: Get club data with enhanced error handling
         club_profile_data = self.get_club_ids(competition_code)
         if not club_profile_data:
-            raise Exception("Failed to get club profile data")
+            logging.error("Failed to get club profile data - API may be unavailable")
+            # Try a fallback approach or raise with more context
+            raise Exception(f"Failed to get club profile data for competition {competition_code}. "
+                          f"API may be down or returning invalid responses. "
+                          f"Check API status at {Config.BASE_URL}")
         
         # Step 2: Get players from clubs
         club_players_data = self.get_club_players(self.club_ids)
         if not club_players_data['data']:
+            logging.error("Failed to get club players data")
             raise Exception("Failed to get club players data")
         
-        # Step 3: Get league table data
-        league_table_data = self.get_league_table_data(league_name)
+        # Step 3: Get league table data (with fallback)
+        try:
+            league_table_data = self.get_league_table_data(league_name)
+        except Exception as e:
+            logging.error(f"Failed to get league table data: {e}")
+            logging.warning("Using empty league table data as fallback")
+            league_table_data = []
         
         # Step 4: Get detailed player data concurrently
         endpoint_templates = {
@@ -251,11 +268,26 @@ class PlayerDataManager:
             **player_data_results
         }
         
-        # Step 5: Upload to S3
-        self.upload_all_data_to_s3(all_data)
+        # Log summary of what was collected
+        logging.info("Data collection summary:")
+        for data_type, data in all_data.items():
+            if isinstance(data, dict) and 'data' in data:
+                count = len(data['data'])
+                logging.info(f"  {data_type}: {count} records")
+            elif isinstance(data, list):
+                logging.info(f"  {data_type}: {len(data)} records")
         
-        # Step 6: Cleanup old files
-        self.cleanup_old_files()
+        # Only upload and cleanup if we have meaningful data
+        if any(data for data in all_data.values() if data):
+            # Step 5: Upload to S3
+            self.upload_all_data_to_s3(all_data)
+            
+            # Step 6: Cleanup old files
+            self.cleanup_old_files()
+            
+            logging.info("Data extraction process completed successfully")
+        else:
+            logging.error("No data was successfully collected - not uploading to S3")
+            raise Exception("Data extraction failed - no data collected")
         
-        logging.info("Data extraction process completed successfully")
         return all_data
