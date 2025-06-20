@@ -87,7 +87,7 @@ class PlayerDataManager:
     @log_execution_time
     def get_player_data(self, endpoint_template: str, player_ids: List[str]) -> Dict[str, Any]:
         """
-        Generic function to fetch player data for multiple players.
+        Generic function to fetch player data for multiple players with improved error handling.
         
         Args:
             endpoint_template: API endpoint template with {} placeholder for player ID
@@ -97,24 +97,33 @@ class PlayerDataManager:
             Dictionary containing player data
         """
         data_dict = {"data": []}
+        successful_requests = 0
+        failed_requests = 0
         
         for player_id in player_ids:
             try:
                 endpoint = endpoint_template.format(player_id)
                 response_data = self.api_client.make_request(endpoint)
-                if not response_data:
-                    logging.warning(f"No data returned for player ID: {player_id}")
-                    continue
                 
-                player_data = {
-                    "player_id": player_id,
-                    "players": response_data
-                }
-                data_dict["data"].append(player_data)
-                logging.info(f"Fetched data for player ID: {player_id}")
+                if response_data is not None:
+                    player_data = {
+                        "player_id": player_id,
+                        "players": response_data
+                    }
+                    data_dict["data"].append(player_data)
+                    successful_requests += 1
+                    logging.info(f"Successfully fetched data for player ID: {player_id}")
+                else:
+                    failed_requests += 1
+                    logging.warning(f"Failed to fetch data for player ID: {player_id} after all retries")
+                    
             except Exception as e:
-                logging.error(f"Error fetching player data for ID {player_id}: {e}")
+                failed_requests += 1
+                logging.error(f"Unexpected error fetching player data for ID {player_id}: {e}")
         
+        logging.info(f"Player data fetch summary: {successful_requests} successful, {failed_requests} failed")
+        
+        # Return data even if some requests failed
         return data_dict
     
     @log_execution_time

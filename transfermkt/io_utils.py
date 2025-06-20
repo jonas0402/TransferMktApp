@@ -279,36 +279,162 @@ class GlueClient:
 
 
 class APIClient:
-    """API client for TransferMarkt data extraction."""
+    """API client for TransferMarkt data extraction with retry logic and rate limiting."""
     
     def __init__(self):
-        """Initialize API client with base URL."""
+        """Initialize API client with base URL and session."""
         self.base_url = Config.BASE_URL
+        self.session = requests.Session()
+        
+        # Set up headers to mimic a real browser
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                         '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        })
+    
+    def _wait_for_rate_limit(self):
+        """Apply rate limiting delay between requests."""
+        import time
+        time.sleep(Config.RATE_LIMIT_DELAY)
+    
+    def _should_retry(self, status_code: int, attempt: int) -> bool:
+        """
+        Determine if a request should be retried based on status code and attempt number.
+        
+        Args:
+            status_code: HTTP status code
+            attempt: Current attempt number (0-based)
+            
+        Returns:
+            True if should retry, False otherwise
+        """
+        # Retry on server errors (5xx) and rate limiting (429)
+        retryable_codes = [429, 500, 502, 503, 504]
+        return status_code in retryable_codes and attempt < Config.MAX_RETRIES
+    
+    def _calculate_delay(self, attempt: int, base_delay: float = None) -> float:
+        """
+        Calculate exponential backoff delay.
+        
+        Args:
+            attempt: Current attempt number (0-based)
+            base_delay: Base delay in seconds
+            
+        Returns:
+            Delay in seconds
+        """
+        if base_delay is None:
+            base_delay = Config.RETRY_DELAY
+        return base_delay * (Config.RETRY_BACKOFF ** attempt)
     
     @log_execution_time
     def make_request(self, endpoint: str) -> Optional[Dict[str, Any]]:
         """
-        Make a request to the TransferMarkt API.
+        Make a request to the TransferMarkt API with retry logic and rate limiting.
         
         Args:
             endpoint: API endpoint
             
         Returns:
-            JSON response or None if error
+            JSON response or None if all retries failed
         """
-        try:
-            response = requests.get(f"{self.base_url}{endpoint}")
-            if response.status_code != 200:
-                logging.error(f"API call failed with status code {response.status_code}: {response.text}")
-                raise Exception("API call failed")
-            return response.json()
-        except Exception as e:
-            logging.error(f"Error making API request to {endpoint}: {e}")
-            return None
+        import time
+        
+        url = f"{self.base_url}{endpoint}"
+        
+        for attempt in range(Config.MAX_RETRIES + 1):
+            try:
+                # Apply rate limiting (except on first attempt)
+                if attempt > 0:
+                    delay = self._calculate_delay(attempt - 1)
+                    logging.info(f"Retry attempt {attempt} for {endpoint} after {delay:.1f}s delay")
+                    time.sleep(delay)
+                else:
+                    self._wait_for_rate_limit()
+                
+                # Make the request
+                response = self.session.get(
+                    url, 
+                    timeout=Config.REQUEST_TIMEOUT
+                )
+                
+                # Handle different status codes
+                if response.status_code == 200:
+                    try:
+                        return response.json()
+                    except ValueError as e:
+                        logging.error(f"Invalid JSON response from {endpoint}: {e}")
+                        if not self._should_retry(response.status_code, attempt):
+                            return None
+                        continue
+                
+                elif response.status_code == 404:
+                    logging.warning(f"Resource not found (404) for endpoint: {endpoint}")
+                    return None  # Don't retry 404s
+                
+                elif response.status_code == 429:
+                    logging.warning(f"Rate limited (429) for endpoint: {endpoint}")
+                    if not self._should_retry(response.status_code, attempt):
+                        logging.error(f"Max retries exceeded for rate limiting on {endpoint}")
+                        return None
+                
+                elif self._should_retry(response.status_code, attempt):
+                    logging.warning(
+                        f"API call failed with status {response.status_code} for {endpoint}. "
+                        f"Attempt {attempt + 1}/{Config.MAX_RETRIES + 1}. Response: {response.text[:200]}"
+                    )
+                else:
+                    logging.error(
+                        f"API call failed with status {response.status_code} for {endpoint}. "
+                        f"Max retries exceeded. Response: {response.text[:200]}"
+                    )
+                    return None
+                    
+            except requests.exceptions.Timeout:
+                logging.warning(f"Request timeout for {endpoint}. Attempt {attempt + 1}/{Config.MAX_RETRIES + 1}")
+                if not self._should_retry(500, attempt):  # Treat timeout as server error
+                    logging.error(f"Max retries exceeded for timeout on {endpoint}")
+                    return None
+                    
+            except requests.exceptions.ConnectionError as e:
+                logging.warning(f"Connection error for {endpoint}: {e}. Attempt {attempt + 1}/{Config.MAX_RETRIES + 1}")
+                if not self._should_retry(500, attempt):  # Treat connection error as server error
+                    logging.error(f"Max retries exceeded for connection error on {endpoint}")
+                    return None
+                    
+            except Exception as e:
+                logging.error(f"Unexpected error making API request to {endpoint}: {e}")
+                return None
+        
+        logging.error(f"All retry attempts failed for {endpoint}")
+        return None
+    
+    def make_request_with_fallback(self, endpoint: str, fallback_value: Any = None) -> Any:
+        """
+        Make API request with a fallback value if all retries fail.
+        
+        Args:
+            endpoint: API endpoint
+            fallback_value: Value to return if request fails
+            
+        Returns:
+            API response or fallback value
+        """
+        result = self.make_request(endpoint)
+        if result is None:
+            logging.warning(f"Using fallback value for failed endpoint: {endpoint}")
+            return fallback_value
+        return result
     
     def scrape_transfermarkt_table(self, comp_name: str) -> List[Dict[str, Any]]:
         """
-        Scrape league table data from transfermarkt.us website.
+        Scrape league table data from transfermarkt.us website with retry logic.
         
         Args:
             comp_name: Competition name
@@ -317,25 +443,59 @@ class APIClient:
             List of league table records
         """
         import numpy as np
+        import time
         
         logging.info(f"Fetching league table data for competition: {comp_name}")
         
         current_year = datetime.now().year
         comp_name = comp_name.replace(" ", "-").lower()
         
+        # Enhanced headers for web scraping
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                         '(KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+                         '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
         }
+        
+        def make_web_request(url: str) -> requests.Response:
+            """Make web request with retry logic."""
+            for attempt in range(Config.MAX_RETRIES + 1):
+                try:
+                    if attempt > 0:
+                        delay = self._calculate_delay(attempt - 1)
+                        logging.info(f"Retrying web request after {delay:.1f}s delay")
+                        time.sleep(delay)
+                    else:
+                        time.sleep(Config.RATE_LIMIT_DELAY)
+                    
+                    response = requests.get(url, headers=headers, timeout=Config.REQUEST_TIMEOUT)
+                    
+                    if response.status_code == 200:
+                        return response
+                    elif self._should_retry(response.status_code, attempt):
+                        logging.warning(f"Web request failed with status {response.status_code}. Retrying...")
+                        continue
+                    else:
+                        raise Exception(f"Web request failed with status {response.status_code}")
+                        
+                except Exception as e:
+                    if attempt < Config.MAX_RETRIES:
+                        logging.warning(f"Web request attempt {attempt + 1} failed: {e}")
+                        continue
+                    else:
+                        raise
+            
+            raise Exception("All web request retry attempts failed")
         
         url = f'https://www.transfermarkt.us/{comp_name}/tabelle/wettbewerb/MLS1/saison_id/{current_year}'
         logging.info(f"Fetching data from initial URL: {url}")
         
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            logging.error(f"API call failed with status code {response.status_code}: {response.text}")
-            raise Exception("API call failed")
-        
+        response = make_web_request(url)
         html_content = StringIO(response.text)
         tables = pd.read_html(html_content)
         
@@ -346,11 +506,7 @@ class APIClient:
             url = f'https://www.transfermarkt.us/{comp_name}/tabelle/wettbewerb/MLS1/saison_id/{int(year)-1}'
             logging.info(f"Fetching season data for year {year} from URL: {url}")
             
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                logging.error(f"API call failed with status code {response.status_code}: {response.text}")
-                raise Exception("API call failed")
-            
+            response = make_web_request(url)
             tables = pd.read_html(StringIO(response.text))
             
             logging.info(f"Assigning conference and year to tables for year {year}")
