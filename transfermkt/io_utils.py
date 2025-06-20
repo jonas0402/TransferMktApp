@@ -286,16 +286,10 @@ class APIClient:
         self.base_url = Config.BASE_URL
         self.session = requests.Session()
         
-        # Set up headers to mimic a real browser
+        # Simple headers for transfermarkt-api.fly.dev (matches your working curl)
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                         '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
+            'Accept': 'application/json',
+            'User-Agent': 'transfermkt-pipeline/1.0'
         })
     
     def _wait_for_rate_limit(self):
@@ -358,22 +352,28 @@ class APIClient:
                 else:
                     self._wait_for_rate_limit()
                 
-                # Make the request
+                # Make the request - requests automatically handles gzip decompression
                 response = self.session.get(
                     url, 
-                    timeout=Config.REQUEST_TIMEOUT
+                    timeout=Config.REQUEST_TIMEOUT,
+                    stream=False  # Ensure full response is loaded for decompression
                 )
                 
                 # Log response details for debugging
+                content_encoding = response.headers.get('content-encoding', 'none')
                 logging.debug(f"Response status: {response.status_code}, "
                              f"Content-Type: {response.headers.get('content-type', 'unknown')}, "
-                             f"Content length: {len(response.text)}")
+                             f"Content-Encoding: {content_encoding}, "
+                             f"Content length: {len(response.content)} bytes")
                 
                 # Handle different status codes
                 if response.status_code == 200:
                     try:
+                        # Ensure we get the decompressed text
+                        response_text = response.text
+                        
                         # Check if response is empty or whitespace
-                        if not response.text or response.text.strip() == "":
+                        if not response_text or response_text.strip() == "":
                             logging.error(f"Empty response from {endpoint}")
                             if not self._should_retry(503, attempt):  # Treat as server error
                                 return None
@@ -381,10 +381,18 @@ class APIClient:
                         
                         # Check if response looks like HTML (error page)
                         content_type = response.headers.get('content-type', '').lower()
-                        if 'html' in content_type or response.text.strip().startswith('<'):
+                        if 'html' in content_type or response_text.strip().startswith('<'):
                             logging.error(f"Received HTML response instead of JSON from {endpoint}. "
-                                        f"First 200 chars: {response.text[:200]}")
+                                        f"First 200 chars: {response_text[:200]}")
                             if not self._should_retry(503, attempt):  # Treat as server error
+                                return None
+                            continue
+                        
+                        # Check if we still have compressed data (fallback check)
+                        if response_text.startswith('\x1f\x8b') or '\ufffd' in response_text:
+                            logging.error(f"Response appears to be compressed/corrupted from {endpoint}. "
+                                        f"Content-Encoding: {content_encoding}")
+                            if not self._should_retry(503, attempt):
                                 return None
                             continue
                         
