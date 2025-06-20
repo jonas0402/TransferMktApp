@@ -58,15 +58,15 @@ class Config:
     ]
     
     # Processing Configuration
-    MAX_WORKERS = 100
+    MAX_WORKERS = 5  # Reduced from 100 - API can't handle high concurrency
     FILES_TO_KEEP = 1
     
     # API Retry Configuration
     MAX_RETRIES = 3
-    RETRY_DELAY = 2.0  # seconds
+    RETRY_DELAY = 5.0  # Increased from 2.0 seconds
     RETRY_BACKOFF = 2.0  # exponential backoff multiplier
     REQUEST_TIMEOUT = 30  # seconds
-    RATE_LIMIT_DELAY = 1.0  # seconds between requests
+    RATE_LIMIT_DELAY = 2.0  # Increased from 1.0 second between requests
     
     @classmethod
     def validate_aws_credentials(cls) -> bool:

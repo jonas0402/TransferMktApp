@@ -54,7 +54,7 @@ class PlayerDataManager:
     @log_execution_time
     def get_club_players(self, club_ids: List[str]) -> Dict[str, Any]:
         """
-        Retrieve players for each club.
+        Retrieve players for each club sequentially to avoid API overload.
         
         Args:
             club_ids: List of club IDs
@@ -63,12 +63,16 @@ class PlayerDataManager:
             Dictionary containing club players data
         """
         data_dict = {"data": []}
+        successful_clubs = 0
+        failed_clubs = 0
         
-        for club_id in club_ids:
+        for i, club_id in enumerate(club_ids):
             endpoint = f"clubs/{club_id}/players"
             try:
+                logging.info(f"Fetching players for club {i+1}/{len(club_ids)}: {club_id}")
                 response_data = self.api_client.make_request(endpoint)
                 if not response_data:
+                    failed_clubs += 1
                     logging.warning(f"No data returned for club ID: {club_id}")
                     continue
                 
@@ -78,10 +82,19 @@ class PlayerDataManager:
                 }
                 data_dict["data"].append(club_player_data)
                 self.player_ids.extend([player['id'] for player in response_data['players']])
-                logging.info(f"Fetched players for club ID: {club_id}")
+                successful_clubs += 1
+                logging.info(f"✓ Fetched {len(response_data['players'])} players for club ID: {club_id}")
+                
+                # Add delay between club requests to be gentle on the API
+                if i < len(club_ids) - 1:  # Don't delay after the last request
+                    import time
+                    time.sleep(Config.RATE_LIMIT_DELAY)
+                    
             except Exception as e:
+                failed_clubs += 1
                 logging.error(f"Error fetching players for club ID {club_id}: {e}")
         
+        logging.info(f"Club players fetch summary: {successful_clubs} successful, {failed_clubs} failed")
         return data_dict
     
     @log_execution_time
