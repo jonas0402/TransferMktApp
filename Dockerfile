@@ -7,6 +7,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the transfermkt package directory (required for modular imports)
+COPY transfermkt/ /app/transfermkt/
+
 # Copy the application scripts
 COPY transfer_mkt_players.py /app/
 COPY transfer_mkt_transform.py /app/
