@@ -463,38 +463,30 @@ class APIClient:
     
     def test_api_connectivity(self) -> bool:
         """
-        Test basic API connectivity and response format.
+        Test basic API connectivity using the same robust method as real API calls.
+        Uses a search endpoint that matches the API's actual structure.
         
         Returns:
             True if API is responding correctly, False otherwise
         """
-        test_endpoint = "competitions"  # Simple endpoint to test connectivity
+        # Use search endpoint that actually exists (matches your working curl command)
+        test_endpoint = "competitions/search/major%20league%20soccer?page_number=1"
         
         try:
             logging.info(f"Testing API connectivity with endpoint: {test_endpoint}")
-            response = self.session.get(
-                f"{self.base_url}{test_endpoint}",
-                timeout=Config.REQUEST_TIMEOUT
-            )
             
-            logging.info(f"API test response - Status: {response.status_code}, "
-                        f"Content-Type: {response.headers.get('content-type', 'unknown')}, "
-                        f"Content length: {len(response.text)}")
+            # Use the same robust make_request method that works for real calls
+            response_data = self.make_request(test_endpoint)
             
-            if response.status_code == 200:
-                try:
-                    response.json()
-                    logging.info("API connectivity test successful")
-                    return True
-                except ValueError:
-                    logging.error(f"API returned non-JSON response: {response.text[:200]}")
-                    return False
+            if response_data is not None:
+                logging.info("✅ API connectivity test successful")
+                return True
             else:
-                logging.error(f"API connectivity test failed with status: {response.status_code}")
+                logging.error("❌ API connectivity test failed - no data returned")
                 return False
                 
         except Exception as e:
-            logging.error(f"API connectivity test failed with exception: {e}")
+            logging.error(f"❌ API connectivity test failed with exception: {e}")
             return False
     
     def make_request_with_fallback(self, endpoint: str, fallback_value: Any = None) -> Any:
