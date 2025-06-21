@@ -567,20 +567,36 @@ def process_players_transfers(data: Dict[str, Any], output_prefix: str, current_
         
         df = pd.concat(transfers_dfs, ignore_index=True)
         
+        # Debug: Log available columns to help troubleshoot
+        logging.info(f"Available columns in transfers DataFrame: {list(df.columns)}")
+        
         # Date transformations
         df['player_date'] = pd.to_datetime(df['player_date'], format='%Y-%m-%d', errors='raise')
-        df['player_updatedAt'] = pd.to_datetime(df['player_updatedAt'], errors='raise')
+        
+        # Check if the updatedAt column exists with the correct prefix
+        updated_at_col = None
+        for col in df.columns:
+            if 'updatedat' in col.lower():
+                updated_at_col = col
+                break
+        
+        if updated_at_col:
+            df[updated_at_col] = pd.to_datetime(df[updated_at_col], errors='raise')
+            logging.info(f"Successfully processed updatedAt column: {updated_at_col}")
+        else:
+            logging.warning("No updatedAt column found in transfers data")
         
         # Market value processing
-        df['player_marketValue'] = (
-            df['player_marketValue']
-            .fillna('')
-            .astype(str)
-            .str.replace('€', '')
-            .map(parse_market_value)
-        )
+        if 'player_marketValue' in df.columns:
+            df['player_marketValue'] = (
+                df['player_marketValue']
+                .fillna('')
+                .astype(str)
+                .str.replace('€', '')
+                .map(parse_market_value)
+            )
         
-        # Rename columns
+        # Rename columns to ensure consistency
         new_columns = []
         for col in df.columns:
             if col == 'player_id':
