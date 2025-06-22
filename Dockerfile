@@ -14,6 +14,7 @@ COPY transfermkt/ /app/transfermkt/
 COPY transfer_mkt_players.py /app/
 COPY transfer_mkt_transform.py /app/
 COPY transfer_mkt_loader.py /app/
+COPY smart_transfer_mkt_loader.py /app/
 
 
 # Define ENV variables (placeholders)
