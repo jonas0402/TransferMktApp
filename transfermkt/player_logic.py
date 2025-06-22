@@ -341,3 +341,70 @@ class PlayerDataManager:
             raise Exception("Data extraction failed - no data collected")
         
         return all_data
+
+    # Individual data getter methods for smart loader compatibility
+    def get_club_profiles_data(self) -> Dict[str, Any]:
+        """Get club profiles data for smart loader"""
+        return self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+
+    def get_players_profile_data(self) -> Dict[str, Any]:
+        """Get players profile data for smart loader"""
+        # First get clubs to populate player IDs
+        if not self.player_ids:
+            club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+            if club_data:
+                self.get_club_players(self.club_ids)
+        
+        return self.get_player_data('players/{}/profile', self.player_ids)
+
+    def get_player_stats_data(self) -> Dict[str, Any]:
+        """Get player stats data for smart loader"""
+        if not self.player_ids:
+            club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+            if club_data:
+                self.get_club_players(self.club_ids)
+        
+        return self.get_player_data('players/{}/stats', self.player_ids)
+
+    def get_players_achievements_data(self) -> Dict[str, Any]:
+        """Get players achievements data for smart loader"""
+        if not self.player_ids:
+            club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+            if club_data:
+                self.get_club_players(self.club_ids)
+        
+        return self.get_player_data('players/{}/achievements', self.player_ids)
+
+    def get_players_data(self) -> Dict[str, Any]:
+        """Get players data (club players) for smart loader"""
+        club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+        if club_data:
+            return self.get_club_players(self.club_ids)
+        return {"data": []}
+
+    def get_players_injuries_data(self) -> Dict[str, Any]:
+        """Get players injuries data for smart loader"""
+        if not self.player_ids:
+            club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+            if club_data:
+                self.get_club_players(self.club_ids)
+        
+        return self.get_player_data('players/{}/injuries', self.player_ids)
+
+    def get_players_market_value_data(self) -> Dict[str, Any]:
+        """Get players market value data for smart loader"""
+        if not self.player_ids:
+            club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+            if club_data:
+                self.get_club_players(self.club_ids)
+        
+        return self.get_player_data('players/{}/market_value', self.player_ids)
+
+    def get_players_transfers_data(self) -> Dict[str, Any]:
+        """Get players transfers data for smart loader"""
+        if not self.player_ids:
+            club_data = self.get_club_ids(Config.DEFAULT_COMPETITION_CODE)
+            if club_data:
+                self.get_club_players(self.club_ids)
+        
+        return self.get_player_data('players/{}/transfers', self.player_ids)
