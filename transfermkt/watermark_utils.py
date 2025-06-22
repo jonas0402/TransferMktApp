@@ -241,6 +241,7 @@ class WatermarkManager:
         try:
             # Try to get from config first
             if hasattr(self.config, 'TEAM_IDS') and self.config.TEAM_IDS:
+                logging.info(f"Using {len(self.config.TEAM_IDS)} teams from config: {self.config.TEAM_IDS}")
                 return self.config.TEAM_IDS
             
             # Fallback: try to extract from existing club profiles data
@@ -255,13 +256,64 @@ class WatermarkManager:
                             for club in item['clubs']:
                                 if 'id' in club:
                                     team_ids.append(str(club['id']))
-                    return list(set(team_ids))  # Remove duplicates
-            except:
-                pass
+                    if team_ids:
+                        unique_teams = list(set(team_ids))  # Remove duplicates
+                        logging.info(f"Extracted {len(unique_teams)} teams from club profiles data: {unique_teams}")
+                        return unique_teams
+            except Exception as e:
+                logging.warning(f"Could not extract teams from club profiles: {e}")
             
-            # Final fallback: return a default list or empty
-            logging.warning("Could not determine team list, using empty list")
-            return []
+            # Try to extract from any existing players data
+            try:
+                players_data = self.s3_client.load_json_from_s3(
+                    f"raw_data/players_data/club_players_data_{date}.json"
+                )
+                if players_data and 'data' in players_data:
+                    team_ids = []
+                    for item in players_data['data']:
+                        if 'players' in item and 'players' in item['players']:
+                            for player in item['players']['players']:
+                                if 'club' in player and 'id' in player['club']:
+                                    team_ids.append(str(player['club']['id']))
+                    if team_ids:
+                        unique_teams = list(set(team_ids))  # Remove duplicates
+                        logging.info(f"Extracted {len(unique_teams)} teams from players data: {unique_teams}")
+                        return unique_teams
+            except Exception as e:
+                logging.warning(f"Could not extract teams from players data: {e}")
+            
+            # Final fallback: use a default MLS team list if nothing else works
+            default_mls_teams = [
+                "583",   # LA Galaxy
+                "6977",  # LAFC  
+                "1031",  # New York City FC
+                "1769",  # New York Red Bulls
+                "1706",  # Seattle Sounders
+                "2089",  # Portland Timbers
+                "1020",  # Atlanta United
+                "3449",  # Inter Miami
+                "1037",  # Orlando City
+                "1708",  # FC Dallas
+                "1707",  # Sporting Kansas City
+                "1709",  # Colorado Rapids
+                "1710",  # Real Salt Lake
+                "1712",  # San Jose Earthquakes
+                "1711",  # Vancouver Whitecaps
+                "1033",  # Toronto FC
+                "1034",  # Montreal Impact
+                "1036",  # New England Revolution
+                "1035",  # Columbus Crew
+                "1038",  # Chicago Fire
+                "3560",  # Minnesota United
+                "3562",  # FC Cincinnati
+                "3559",  # Nashville SC
+                "3561",  # Austin FC
+                "3558",  # Charlotte FC
+                "1713",  # Houston Dynamo
+                "3563",  # St. Louis City SC
+            ]
+            logging.warning(f"Using default MLS team list with {len(default_mls_teams)} teams")
+            return default_mls_teams
             
         except Exception as e:
             logging.error(f"Error getting team list: {e}")

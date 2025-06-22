@@ -68,6 +68,19 @@ class Config:
     REQUEST_TIMEOUT = 45  # Increased from 30 seconds
     RATE_LIMIT_DELAY = 3.0  # Increased from 2.0 seconds between requests
     
+    # Team Configuration for Watermark System
+    # Add your MLS team IDs here - these are the teams you want to track data for
+    TEAM_IDS = [
+        # Example team IDs - replace with your actual MLS team IDs
+        "583",   # LA Galaxy
+        "6977",  # LAFC  
+        "1031",  # New York City FC
+        "1769",  # New York Red Bulls
+        "1706",  # Seattle Sounders
+        "2089",  # Portland Timbers
+        # Add more team IDs as needed
+    ]
+    
     @classmethod
     def validate_aws_credentials(cls) -> bool:
         """Validate that AWS credentials are available."""
