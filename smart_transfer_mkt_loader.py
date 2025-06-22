@@ -23,9 +23,14 @@ from transfermkt.player_logic import PlayerDataManager
 
 
 @log_execution_time
-def check_data_completeness(date: str) -> Dict:
+def check_data_completeness(date: str, force_refresh: bool = False) -> Dict:
     """Check current data completeness and return missing data sources"""
     watermark_manager = WatermarkManager()
+    
+    # Force refresh the watermark table to check actual team data completeness
+    if force_refresh:
+        logging.info("🔄 Force refreshing watermark table to check actual team data...")
+        watermark_manager.create_watermark_table(date, force_refresh=True)
     
     # Generate completeness report
     report = watermark_manager.get_data_completeness_report(date)
@@ -182,7 +187,7 @@ def smart_data_loading_workflow(date: str = None):
     try:
         # Step 1: Check current data completeness
         logging.info("📋 Step 1: Checking data completeness...")
-        completeness_status = check_data_completeness(date)
+        completeness_status = check_data_completeness(date, force_refresh=True)  # Always force refresh
         
         if completeness_status["complete"]:
             logging.info("🎉 All data is already complete! No action needed.")

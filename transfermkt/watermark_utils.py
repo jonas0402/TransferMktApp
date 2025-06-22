@@ -82,7 +82,7 @@ class WatermarkManager:
             )
         }
     
-    def create_watermark_table(self, date: str) -> pd.DataFrame:
+    def create_watermark_table(self, date: str, force_refresh: bool = False) -> pd.DataFrame:
         """Create watermark table for tracking data completeness"""
         try:
             # Get list of teams from config or existing data
@@ -96,7 +96,13 @@ class WatermarkManager:
                         continue
                         
                     # Check if data exists for this team/source/date
-                    data_exists = self._check_data_exists(source_config, date, team_id if source_config.required_for_teams else None)
+                    if source_config.required_for_teams:
+                        # For team-specific data, check if team actually has data in the file
+                        data_exists, record_count = self._check_team_data_exists(source_config, date, team_id)
+                    else:
+                        # For non-team specific data, just check file existence
+                        data_exists = self._check_data_exists(source_config, date, None)
+                        record_count = 0
                     
                     watermark_data.append({
                         'date': date,
@@ -105,9 +111,9 @@ class WatermarkManager:
                         'data_exists': data_exists,
                         'last_checked': datetime.now().isoformat(),
                         'file_size_bytes': self._get_file_size(source_config, date) if data_exists else 0,
-                        'record_count': None,  # Will be populated after loading
+                        'record_count': record_count,
                         'data_quality_score': None,  # Will be populated after validation
-                        'needs_refresh': not data_exists
+                        'needs_refresh': not data_exists or force_refresh
                     })
             
             # Add league table entry (not team-specific)
@@ -122,7 +128,7 @@ class WatermarkManager:
                 'file_size_bytes': self._get_file_size(league_config, date) if league_exists else 0,
                 'record_count': None,
                 'data_quality_score': None,
-                'needs_refresh': not league_exists
+                'needs_refresh': not league_exists or force_refresh
             })
             
             df = pd.DataFrame(watermark_data)
@@ -131,7 +137,9 @@ class WatermarkManager:
             watermark_key = f"control_data/watermark_table_{date}.csv"
             self.s3_client.upload_dataframe(df, watermark_key)
             
+            total_missing = len(df[df['needs_refresh'] == True])
             logging.info(f"Created watermark table with {len(df)} entries for {date}")
+            logging.info(f"Found {total_missing} missing/incomplete data sources")
             return df
             
         except Exception as e:
@@ -345,3 +353,62 @@ class WatermarkManager:
         except Exception as e:
             logging.warning(f"Could not load watermark table for {date}: {e}")
             return None
+    
+    def _check_team_data_exists(self, source_config: DataSourceConfig, date: str, team_id: str) -> Tuple[bool, int]:
+        """Check if team-specific data exists and get record count"""
+        try:
+            s3_key = source_config.s3_key_pattern.format(date=date)
+            if not self.s3_client.file_exists(s3_key):
+                return False, 0
+            
+            # Load the data file and check if the specific team has data
+            data = self.s3_client.load_json_from_s3(s3_key)
+            if not data or 'data' not in data:
+                return False, 0
+            
+            record_count = 0
+            found_team = False
+            
+            # Check different data structures based on source type
+            if source_config.name == 'club_profiles':
+                for item in data['data']:
+                    if 'clubs' in item:
+                        for club in item['clubs']:
+                            if 'id' in club and str(club['id']) == team_id:
+                                found_team = True
+                                record_count += 1
+                                
+            elif source_config.name in ['players_profile', 'player_stats', 'players_achievements', 
+                                       'players_injuries', 'players_market_value', 'players_transfers']:
+                for item in data['data']:
+                    if 'players' in item:
+                        # Check if this player belongs to the team
+                        player_data = item['players']
+                        
+                        # Handle different player data structures
+                        if 'club' in player_data and 'id' in player_data['club']:
+                            if str(player_data['club']['id']) == team_id:
+                                found_team = True
+                                record_count += 1
+                        elif 'players' in player_data:  # For nested players structure
+                            for player in player_data.get('players', []):
+                                if 'club' in player and 'id' in player['club']:
+                                    if str(player['club']['id']) == team_id:
+                                        found_team = True
+                                        record_count += 1
+                                        
+            elif source_config.name == 'players_data':
+                for item in data['data']:
+                    if 'players' in item and 'players' in item['players']:
+                        for player in item['players']['players']:
+                            if 'club' in player and 'id' in player['club']:
+                                if str(player['club']['id']) == team_id:
+                                    found_team = True
+                                    record_count += 1
+            
+            logging.debug(f"Team {team_id} in {source_config.name}: found={found_team}, records={record_count}")
+            return found_team, record_count
+            
+        except Exception as e:
+            logging.warning(f"Error checking team data for {team_id} in {source_config.name}: {e}")
+            return False, 0
