@@ -369,42 +369,56 @@ class WatermarkManager:
             record_count = 0
             found_team = False
             
+            # Debug: Log the data structure to understand format
+            logging.debug(f"Checking data structure for {source_config.name}: {type(data.get('data', []))}")
+            
             # Check different data structures based on source type
             if source_config.name == 'club_profiles':
-                for item in data['data']:
-                    if 'clubs' in item:
-                        for club in item['clubs']:
-                            if 'id' in club and str(club['id']) == team_id:
-                                found_team = True
-                                record_count += 1
+                # Handle club profiles structure: data['data'] contains club info directly
+                data_content = data.get('data', {})
+                if 'clubs' in data_content:
+                    for club in data_content['clubs']:
+                        if isinstance(club, dict) and 'id' in club and str(club['id']) == team_id:
+                            found_team = True
+                            record_count += 1
+                else:
+                    # Alternative structure: data['data'] might be the club data itself
+                    if isinstance(data_content, dict) and 'id' in data_content and str(data_content['id']) == team_id:
+                        found_team = True
+                        record_count = 1
                                 
             elif source_config.name in ['players_profile', 'player_stats', 'players_achievements', 
                                        'players_injuries', 'players_market_value', 'players_transfers']:
                 for item in data['data']:
-                    if 'players' in item:
+                    if isinstance(item, dict) and 'players' in item:
                         # Check if this player belongs to the team
                         player_data = item['players']
                         
                         # Handle different player data structures
-                        if 'club' in player_data and 'id' in player_data['club']:
-                            if str(player_data['club']['id']) == team_id:
-                                found_team = True
-                                record_count += 1
-                        elif 'players' in player_data:  # For nested players structure
-                            for player in player_data.get('players', []):
-                                if 'club' in player and 'id' in player['club']:
-                                    if str(player['club']['id']) == team_id:
-                                        found_team = True
-                                        record_count += 1
+                        if isinstance(player_data, dict):
+                            if 'club' in player_data and isinstance(player_data['club'], dict) and 'id' in player_data['club']:
+                                if str(player_data['club']['id']) == team_id:
+                                    found_team = True
+                                    record_count += 1
+                            elif 'players' in player_data:  # For nested players structure
+                                players_list = player_data.get('players', [])
+                                if isinstance(players_list, list):
+                                    for player in players_list:
+                                        if isinstance(player, dict) and 'club' in player and isinstance(player['club'], dict) and 'id' in player['club']:
+                                            if str(player['club']['id']) == team_id:
+                                                found_team = True
+                                                record_count += 1
                                         
             elif source_config.name == 'players_data':
                 for item in data['data']:
-                    if 'players' in item and 'players' in item['players']:
-                        for player in item['players']['players']:
-                            if 'club' in player and 'id' in player['club']:
-                                if str(player['club']['id']) == team_id:
-                                    found_team = True
-                                    record_count += 1
+                    if isinstance(item, dict) and 'players' in item and isinstance(item['players'], dict):
+                        players_data = item['players']
+                        if 'players' in players_data and isinstance(players_data['players'], list):
+                            for player in players_data['players']:
+                                if isinstance(player, dict) and 'club' in player and isinstance(player['club'], dict) and 'id' in player['club']:
+                                    if str(player['club']['id']) == team_id:
+                                        found_team = True
+                                        record_count += 1
             
             logging.debug(f"Team {team_id} in {source_config.name}: found={found_team}, records={record_count}")
             return found_team, record_count
