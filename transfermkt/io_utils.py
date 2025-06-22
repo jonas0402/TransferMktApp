@@ -167,6 +167,79 @@ class S3Client:
         except Exception as e:
             logging.error(f"Error deleting files in folder {folder_name}: {e}")
 
+    def file_exists(self, key: str) -> bool:
+        """
+        Check if a file exists in S3.
+        
+        Args:
+            key: S3 object key
+            
+        Returns:
+            True if file exists, False otherwise
+        """
+        try:
+            self.client.head_object(Bucket=Config.S3_BUCKET_NAME, Key=key)
+            return True
+        except Exception:
+            return False
+
+    def get_file_size(self, key: str) -> int:
+        """
+        Get the size of a file in S3.
+        
+        Args:
+            key: S3 object key
+            
+        Returns:
+            File size in bytes, 0 if file doesn't exist
+        """
+        try:
+            response = self.client.head_object(Bucket=Config.S3_BUCKET_NAME, Key=key)
+            return response['ContentLength']
+        except Exception:
+            return 0
+
+    def load_json_from_s3(self, key: str) -> Optional[Dict[str, Any]]:
+        """
+        Load JSON data from a specific S3 key.
+        
+        Args:
+            key: S3 object key
+            
+        Returns:
+            JSON data as dictionary or None if error
+        """
+        try:
+            response = self.client.get_object(Bucket=Config.S3_BUCKET_NAME, Key=key)
+            if response.get('ResponseMetadata', {}).get('HTTPStatusCode') == 200:
+                logging.info(f"Successful S3 get_object response for key: {key}")
+                json_content = response['Body'].read().decode('utf-8')
+                return json.loads(json_content)
+            else:
+                logging.error(f"Unsuccessful S3 get_object response for key: {key}")
+                return None
+        except Exception as e:
+            logging.error(f"Error loading JSON from S3 key {key}: {e}", exc_info=True)
+            return None
+
+    def load_dataframe_from_s3(self, key: str) -> Optional[pd.DataFrame]:
+        """
+        Load a DataFrame from S3 CSV file.
+        
+        Args:
+            key: S3 object key
+            
+        Returns:
+            DataFrame or None if error
+        """
+        try:
+            response = self.client.get_object(Bucket=Config.S3_BUCKET_NAME, Key=key)
+            csv_content = response['Body'].read().decode('utf-8')
+            return pd.read_csv(StringIO(csv_content), sep='|')
+        except Exception as e:
+            logging.error(f"Error loading DataFrame from S3 key {key}: {e}", exc_info=True)
+            return None
+
 
 class GlueClient:
     """AWS Glue client wrapper for schema management."""
